@@ -2,6 +2,69 @@
 
 All notable changes to TVControl are documented here. This project follows [Semantic Versioning](https://semver.org/).
 
+## [2.4.8] - 2026-09-08
+
+### Fixed
+
+- **The server no longer refuses to start when it cannot read its own source.** Windows users
+  running the bundled server out of `C:\Program Files\` got nothing but
+  `MCP error -32000: Connection closed`, with `EPERM reading ...` on stderr. The cause was in
+  our own startup path: 2.3.1 made the server derive its version and tool count by reading
+  `package.json` and scanning `src/tools/` at module load, so that it could stop introducing
+  itself with hand-maintained numbers that were wrong. Neither read was guarded.
+
+  Program Files ACLs and Controlled Folder Access deny directory *enumeration* to a
+  non-elevated process long before they deny anything else, so `readdirSync` threw. It threw at
+  import time, before the MCP server object existed, which is why the client saw a closed pipe
+  and no error: there was no protocol channel left to report on.
+
+  Both reads now fail soft. The scan stays primary, because a derived count is the only kind
+  that cannot drift, and when it throws the server falls back to the catalog generated at
+  publish time (`src/core/catalog_fallback.js`) and says so on stderr. `tv_capability_matrix`
+  reports `catalog_source: "scan" | "fallback"` so a degraded session is visible rather than
+  silently plausible. An empty scan result counts as a failed read, not as a package with no
+  tools.
+
+  The fallback cannot go stale: `tests/startup_resilience.test.js` fails the build if it
+  diverges from a live scan or from `package.json`. Regenerate with
+  `node scripts/gen_tool_catalog.js`. That test also spawns the real entrypoint against a
+  tools directory chmod'ed to `0111` - traversable, not listable, the POSIX shape of the
+  Windows denial - and requires a full MCP handshake and the whole catalog back.
+
+## [2.4.7] - 2026-09-08
+
+### Fixed
+
+- **Launching TradingView handed it an environment that makes it crash.** We inherited the full
+  parent environment, and this connector nearly always runs under a Node process, so TradingView's
+  Electron native-module resolver guessed the wrong runtime and died on an uncaught exception
+  before the chart opened (`No native build was found for platform=darwin arch=arm64
+  runtime=electron abi=145`, with `libc=glibc` on a Mac as the tell). The launcher now passes only
+  what a GUI app needs, drops everything Node/npm/nvm/bun/pnpm/yarn/volta/fnm/asdf/Electron
+  specific, and pins PATH so a shim cannot reintroduce it.
+
+- **`kill_existing: true` failed every time on macOS, not occasionally.** Teardown waited a flat
+  1500 ms. Measured on Darwin 25.3: the process was still alive and port 9222 still bound at
+  6217 ms. The replacement was spawned 4.7 seconds early, the OS refused it, and the caller got a
+  bare "TradingView failed during startup" with no remedy. One live session burned 437 steps
+  looping on that. It now polls for the process being gone AND the port released, to a 20 s
+  deadline.
+
+- **`indicator_search` stamped `verified_empty` on a case mismatch.** TradingView's matching is
+  not case-insensitive for saved scripts: on the account that owns it, `"tc-tide"` returned 3
+  results and `"TC-TIDE"` returned 0 with `verified_empty: true`. The query is now retried
+  lower-case before any empty verdict.
+
+- 2.4.7 was published to npm from an uncommitted working tree, and shipped with a red test. Both
+  fixed: the release is now committed, tagged and reproducible.
+
+## [2.4.6] - 2026-08-31
+
+### Fixed
+
+- **Refuse a CDP endpoint that is not TradingView.** Connecting to whatever answered on the
+  debug port meant a stray Chrome could be driven as if it were the chart.
+
 ## [2.4.5] - 2026-08-31
 
 ### Fixed

@@ -24,7 +24,8 @@ import { registerTabTools } from './tools/tab.js';
 import { registerVisionTools } from './tools/vision.js';
 import { registerStateTools } from './tools/state.js';
 import { registerSweepTools } from './tools/sweep.js';
-import { discoverToolCatalog } from './core/capabilities.js';
+import { discoverToolCatalogDetailed } from './core/capabilities.js';
+import { FALLBACK_VERSION } from './core/catalog_fallback.js';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -39,9 +40,30 @@ import { dirname, join } from 'node:path';
 //
 // Derive all three. The catalog scan is the same one tv_capability_matrix uses,
 // so the server and the matrix can no longer disagree.
-const _pkg = JSON.parse(readFileSync(
-  join(dirname(fileURLToPath(import.meta.url)), '..', 'package.json'), 'utf8'));
-const CATALOG = discoverToolCatalog();
+//
+// BUT NEITHER READ IS ALLOWED TO KILL THE PROCESS.
+//
+// Shipped in 2.3.1, broke Windows: under C:\Program Files\ both of these throw
+// EPERM for a non-elevated process, at module load, before the server object
+// exists — so there was no MCP channel to report it on and every client just
+// said `-32000: Connection closed`. Describing yourself accurately is worth
+// something. It is not worth refusing to start. Both reads now fail soft to the
+// values generated at publish time, and both say so on stderr.
+let _version = FALLBACK_VERSION;
+try {
+  _version = JSON.parse(readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), '..', 'package.json'), 'utf8')).version || FALLBACK_VERSION;
+} catch (err) {
+  process.stderr.write(
+    `tvcontrol: cannot read package.json (${err?.code || err?.message}); reporting version ${FALLBACK_VERSION}\n`);
+}
+
+const _catalog = discoverToolCatalogDetailed();
+if (_catalog.source !== 'scan') {
+  process.stderr.write(
+    `tvcontrol: cannot scan src/tools (${_catalog.error}); using the catalog generated at publish time\n`);
+}
+const CATALOG = _catalog.tools;
 const GATED = CATALOG.filter((name) => name === 'ui_evaluate');
 const TOOL_COUNT = CATALOG.length;
 const DEFAULT_COUNT = TOOL_COUNT - GATED.length;
@@ -57,7 +79,7 @@ const REGISTERED_COUNT = CATALOG.filter((name) => isToolRegistered(name)).length
 const server = new McpServer(
   {
     name: 'tvcontrol',
-    version: _pkg.version,
+    version: _version,
     description: `AI remote control for TradingView Desktop — ${REGISTERED_COUNT} MCP tools driving symbols, indicators, Pine Script, snapshots, sweeps, diagnostics, and live chart vision over CDP.`,
   },
   {

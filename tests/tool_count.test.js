@@ -90,6 +90,19 @@ describe('the server describes itself accurately', () => {
       'ui_evaluate must not be registered without TV_MCP_ADVANCED=1');
   });
 
+  it('the package.json description states the number of tools the server registers', () => {
+    // This string is what the npm package page renders, so it is the first
+    // count most people ever see. It said 105 while the server registered 112 —
+    // the same stale hardcoded number the server's own self-description was
+    // fixed for in 2.3.1, still sitting in the one place a buyer reads first.
+    const { tools } = boot();
+    const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8'));
+    const claim = /(\d+)\s+MCP tools/.exec(pkg.description);
+    assert.ok(claim, 'package.json description no longer states a tool count');
+    assert.equal(Number(claim[1]), tools.length,
+      `package.json claims ${claim?.[1]} tools, the server registers ${tools.length}`);
+  });
+
   it('the README states the number of tools the server actually registers', () => {
     // Caught during the 2.3.0 pre-flight by booting the packed tarball: the
     // README said 106, which is the CATALOG total including the gated

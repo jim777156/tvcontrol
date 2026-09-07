@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { compatibilityCheck } from './health.js';
 import { ClassifiedError, CATEGORIES } from '../errors.js';
 import { isReadonlyMode, isToolRegistered } from './readonly.js';
+import { FALLBACK_TOOL_CATALOG } from './catalog_fallback.js';
 
 const TOOLS_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'tools');
 const CACHE_MS = 10_000;
@@ -56,18 +57,48 @@ const FAMILY_REQUIREMENTS = Object.freeze({
   alert_create: ['main_series'],
 });
 
-export function discoverToolCatalog({ _deps } = {}) {
+// A SERVER THAT CANNOT READ ITS OWN SOURCE STILL HAS TO SERVE TOOLS.
+//
+// Measured 2026-09-08: Windows users running the bundled server out of
+// C:\Program Files\ lost it at module load with `EPERM reading
+// ...\node_modules\@ferroxlabs\...` and saw only `-32000: Connection closed`.
+// Restrictive ACLs and Controlled Folder Access deny directory ENUMERATION to a
+// non-elevated process well before they deny anything else, and this scan was
+// the first thing that ran — before the server object existed, so there was no
+// protocol channel left to report the failure on.
+//
+// The scan stays primary, because a derived count is the only kind that cannot
+// drift. When it throws, fall back to the catalog generated at publish time
+// (scripts/gen_tool_catalog.js) and SAY SO in `source`. A fallback that reports
+// itself as a scan would be exactly the silent success this scan was written to
+// end.
+//
+// An empty scan counts as a failure too: a tools directory that reads as zero
+// tools is a failed read, not a package with no tools.
+export function discoverToolCatalogDetailed({ _deps } = {}) {
   const deps = {
     readdirSync: _deps?.readdirSync || readdirSync,
     readFileSync: _deps?.readFileSync || readFileSync,
     toolsDir: _deps?.toolsDir || TOOLS_DIR,
   };
   const names = new Set();
-  for (const file of deps.readdirSync(deps.toolsDir).filter((value) => value.endsWith('.js')).sort()) {
-    const source = deps.readFileSync(join(deps.toolsDir, file), 'utf8');
-    for (const match of source.matchAll(/server\.tool\s*\(\s*['"]([^'"]+)['"]/g)) names.add(match[1]);
+  let failure = null;
+  try {
+    for (const file of deps.readdirSync(deps.toolsDir).filter((value) => value.endsWith('.js')).sort()) {
+      const source = deps.readFileSync(join(deps.toolsDir, file), 'utf8');
+      for (const match of source.matchAll(/server\.tool\s*\(\s*['"]([^'"]+)['"]/g)) names.add(match[1]);
+    }
+  } catch (err) {
+    // Node's fs messages already lead with the code (`EACCES: permission denied, scandir ...`).
+    failure = err?.message || String(err);
   }
-  return [...names].sort();
+  if (!failure && names.size === 0) failure = `no tools found in ${deps.toolsDir}`;
+  if (failure) return { tools: [...FALLBACK_TOOL_CATALOG], source: 'fallback', error: failure };
+  return { tools: [...names].sort(), source: 'scan', error: null };
+}
+
+export function discoverToolCatalog(options = {}) {
+  return discoverToolCatalogDetailed(options).tools;
 }
 
 export function requiredCapabilitiesForTool(name) {
@@ -87,9 +118,14 @@ async function _probe(deps, force = false) {
 export async function getCapabilityMatrix({ probe = true, force = false, _deps } = {}) {
   const deps = {
     compatibilityCheck: _deps?.compatibilityCheck || compatibilityCheck,
-    catalog: _deps?.catalog || (() => discoverToolCatalog({ _deps })),
+    catalog: _deps?.catalog || (() => discoverToolCatalogDetailed({ _deps })),
     now: _deps?.now || Date.now,
   };
+  // An injected catalog is a bare array; the real one carries its provenance.
+  const scanned = deps.catalog();
+  const catalogNames = Array.isArray(scanned) ? scanned : scanned.tools;
+  const catalogSource = Array.isArray(scanned) ? 'scan' : scanned.source;
+  const catalogError = Array.isArray(scanned) ? null : scanned.error;
   let live = null;
   let probeError = null;
   if (probe) {
@@ -97,7 +133,7 @@ export async function getCapabilityMatrix({ probe = true, force = false, _deps }
     catch (err) { probeError = err?.category || CATEGORIES.CDP_DISCONNECTED; }
   }
   const checks = live?.checks || null;
-  const tools = deps.catalog().map((name) => {
+  const tools = catalogNames.map((name) => {
     const requires = requiredCapabilitiesForTool(name);
     const missing = checks ? requires.filter((capability) => checks[capability] !== true) : [];
     // Same predicate the server registers by, so the matrix cannot claim a tool is
@@ -118,6 +154,11 @@ export async function getCapabilityMatrix({ probe = true, force = false, _deps }
     probe_status: checks ? 'available' : (probe ? 'unavailable' : 'not_requested'),
     ...(probeError ? { probe_error_category: probeError } : {}),
     desktop_version: live?.desktop_version || null,
+    // 'fallback' means src/tools/ could not be read and this list is the one
+    // frozen at publish time. It is the honest answer to "is this matrix
+    // derived from what is actually installed?"
+    catalog_source: catalogSource,
+    ...(catalogError ? { catalog_error: catalogError } : {}),
     tool_count: tools.length,
     registered: tools.filter((tool) => tool.registered).length,
     available: tools.filter((tool) => tool.status === 'available').length,

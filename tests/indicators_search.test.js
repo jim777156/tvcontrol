@@ -90,6 +90,13 @@ describe('indicator dialog search', () => {
       true,
       ...Array(7).fill({ open: true, results: [] }),
       true,
+      // The lower-case retry (added with the case-retry fix) types the query a
+      // SECOND time before any empty verdict is reached, so the scripted mock
+      // has to feed that round too. Without these the mock runs dry mid-search
+      // and the code correctly reports "dialog closed" - a real signal, just
+      // not the one this test is about.
+      ...Array(8).fill({ open: true, results: [] }),
+      true,
       { open: true, results: [] },
       true,
     ]);

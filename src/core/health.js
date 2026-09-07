@@ -473,8 +473,47 @@ function _isTradingViewRunning(deps) {
   }
 }
 
-function _spawnDetached(spawnFn, executable, args) {
-  const child = spawnFn(executable, args, { detached: true, stdio: 'ignore' });
+/**
+ * Launch TradingView Desktop with a SCRUBBED environment.
+ *
+ * TradingView is an Electron app that resolves a prebuilt native module at
+ * startup. That resolver reads the ambient environment to decide which runtime
+ * it is running under, and a Node toolchain in the environment makes it guess
+ * wrong - measured on macOS 26 / TradingView 3.4.0, launched with `NVM_*`
+ * inherited:
+ *
+ *   Error: No native build was found for platform=darwin arch=arm64
+ *   runtime=electron abi=145 ... node=24.15.0 electron=41.7.1
+ *
+ * (`libc=glibc` on a Mac is the tell that the detection went wrong.) The app
+ * then dies on an uncaught exception before the chart ever opens.
+ *
+ * We inherited the FULL parent environment here, and this connector usually
+ * runs under a Node process (npx/bunx, or an agent host), so those variables
+ * are almost always present - which is why the crash looked intermittent: a
+ * TradingView the user opened from Finder is clean, one we launched was not.
+ *
+ * Pass only what a GUI app legitimately needs. Everything Node-, npm-, nvm- and
+ * Electron-specific is dropped, because none of it belongs to a separate app we
+ * are merely starting on the user's behalf.
+ */
+function _tradingViewLaunchEnv(env = process.env) {
+  const KEEP = new Set(['HOME', 'USER', 'LOGNAME', 'SHELL', 'LANG', 'TMPDIR', 'PATH', 'DISPLAY', 'XAUTHORITY']);
+  const out = {};
+  for (const [k, v] of Object.entries(env)) {
+    if (typeof v !== 'string') continue;
+    if (KEEP.has(k)) { out[k] = v; continue; }
+    if (/^(NODE|NPM|NVM|npm_|ELECTRON|BUN|PNPM|YARN|VOLTA|FNM|ASDF)/i.test(k)) continue;
+    // Anything else the user genuinely set is harmless to a GUI app.
+    out[k] = v;
+  }
+  // A PATH that leads with a Node shim reintroduces the problem by the back door.
+  out.PATH = '/usr/bin:/bin:/usr/sbin:/sbin';
+  return out;
+}
+
+function _spawnDetached(spawnFn, executable, args, env = _tradingViewLaunchEnv()) {
+  const child = spawnFn(executable, args, { detached: true, stdio: 'ignore', env });
   child.unref();
   return child;
 }
@@ -640,8 +679,35 @@ export async function launch({ port, kill_existing, _deps } = {}) {
         // binary name only.
         deps.execFileSync('pkill', ['-x', 'TradingView'], { timeout: 5000 });
       }
-      await deps.delay(1500);
     } catch { /* may not be running */ }
+    // WAIT FOR THE CONDITION, NOT A GUESSED CONSTANT.
+    //
+    // This used to be a flat `delay(1500)` and that made `kill_existing: true`
+    // fail EVERY time on macOS, not occasionally. Measured on Darwin 25.3 with
+    // TradingView 3.4.0: after `pkill -x TradingView` the process was still
+    // alive, and port 9222 still bound, for 6217 ms. We spawned the
+    // replacement at 1500 ms - 4.7 seconds early - so the OS refused the
+    // second copy, `spawnFailedEarly` fired, and (because `killFirst` is true)
+    // the `alreadyRunning` branch below is false, so the caller got a bare
+    // "TradingView failed during startup" with no remedy to act on. An agent
+    // then retries, kills the app it just failed to replace, and loops: one
+    // live session burned 437 steps this way and ended with no TradingView
+    // running at all.
+    //
+    // Poll for what actually has to be true - the process gone AND the control
+    // port released - and give it real headroom. A slow machine or a dialog
+    // ("save changes?") can push shutdown well past six seconds.
+    const deadline = Date.now() + 20000;
+    while (Date.now() < deadline) {
+      let alive = false;
+      try { alive = _isTradingViewRunning(deps); } catch { alive = false; }
+      let portHeld = false;
+      try { portHeld = Boolean(await deps.probeCdp(cdpPort)); } catch { portHeld = false; }
+      if (!alive && !portHeld) return;
+      await deps.delay(400);
+    }
+    // Fall through on timeout: the spawn below still runs and its own
+    // early-failure path reports honestly. Never silently pretend it worked.
   };
   if (killFirst) await killExisting();
 
@@ -671,7 +737,12 @@ export async function launch({ port, kill_existing, _deps } = {}) {
       // "the connector is broken", and a caller with no remedy to reach for
       // falls back to telling a non-technical user to relaunch from a terminal.
       // The remedy already exists on this very tool, so name it.
-      const alreadyRunning = !killFirst && _isTradingViewRunning(deps);
+      // `killFirst` does NOT mean the old copy is gone - a shutdown that
+      // outran `killExisting`'s wait leaves it running, and that is exactly
+      // the case the caller needs named. Ask the OS instead of inferring it
+      // from which branch we took; the old `!killFirst &&` guard hid the most
+      // common real cause behind a generic startup failure.
+      const alreadyRunning = _isTradingViewRunning(deps);
       throw new ClassifiedError(
         CATEGORIES.TV_NOT_RUNNING,
         alreadyRunning

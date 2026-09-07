@@ -128,6 +128,30 @@ async function _readRowsOrProveEmpty(evaluateFn, wait, cleanQuery) {
   }
   if (rows.length > 0) return { rows, controlCount: null };
 
+  // CASE RETRY, BEFORE WE DARE CALL A ZERO VERIFIED.
+  //
+  // TradingView's own matching is not case-insensitive for saved scripts, and the
+  // difference is total, not partial. Measured on the account that OWNS the script,
+  // with it loaded on the chart and sitting in Favorites:
+  //
+  //   "tc-tide" -> 3 results   (TC-TIDE, TC-TIDE PRO)
+  //   "TC-TIDE" -> 0 results   <- and we then stamped verified_empty: true
+  //
+  // A caller reading that zero is told a private script is missing when the account
+  // owns it. That is the worst possible answer from a tool whose whole contract is
+  // "an empty result is trustworthy when it carries verified_empty", and it sent a
+  // live run off to tell a user to re-add an indicator they already had.
+  //
+  // So: if the query was not already lower-case, type it again in lower-case before
+  // going anywhere near the empty-verdict path. Additive by construction - a query
+  // that already matched never reaches this line, so no working search changes.
+  const lowered = cleanQuery.toLowerCase();
+  if (lowered !== cleanQuery) {
+    await _typeQuery(evaluateFn, wait, lowered);
+    const retry = await _readRows(evaluateFn);
+    if (retry.length > 0) return { rows: retry, controlCount: null, matchedAs: lowered };
+  }
+
   await _typeQuery(evaluateFn, wait, READINESS_CONTROL_QUERY);
   const control = await _readRows(evaluateFn);
   if (control.length === 0) {
@@ -151,9 +175,12 @@ export async function searchStudies({ query, limit = 25, _deps } = {}) {
   await _openDialog(deps.evaluate, deps.wait);
   try {
     await _typeQuery(deps.evaluate, deps.wait, cleanQuery);
-    const { rows, controlCount } = await _readRowsOrProveEmpty(deps.evaluate, deps.wait, cleanQuery);
+    const { rows, controlCount, matchedAs } = await _readRowsOrProveEmpty(deps.evaluate, deps.wait, cleanQuery);
     const capped = rows.slice(0, cap);
     const out = { success: true, query: cleanQuery, count: capped.length, results: capped };
+    // Say so when the caller's spelling was not what matched, so the same string can
+    // be handed to `indicator_add_from_search` without repeating the discovery.
+    if (matchedAs) out.matched_as = matchedAs;
     if (rows.length === 0) {
       // Say WHY this zero can be trusted, so a caller can act on the absence.
       out.verified_empty = true;

@@ -493,22 +493,187 @@ export async function manageIndicator({ action, indicator, entity_id, inputs: in
   }
 }
 
+function _visualStateExpression() {
+  return `
+    (function() {
+      var chart = ${CHART_API};
+      var timeScale = typeof chart.getTimeScale === 'function' ? chart.getTimeScale() : null;
+      var panes = typeof chart.getPanes === 'function' ? chart.getPanes() : null;
+      var firstPane = Array.isArray(panes) ? panes[0] : null;
+      var mainPriceScale = firstPane && typeof firstPane.getMainSourcePriceScale === 'function'
+        ? firstPane.getMainSourcePriceScale()
+        : null;
+      if (
+        !timeScale
+        || typeof timeScale.barSpacing !== 'function'
+        || typeof timeScale.rightOffset !== 'function'
+        || typeof timeScale.width !== 'function'
+        || !mainPriceScale
+        || typeof mainPriceScale.isAutoScale !== 'function'
+        || typeof mainPriceScale.getVisiblePriceRange !== 'function'
+      ) return { error: 'required_visual_scale_api_unavailable' };
+      var visiblePriceRange = typeof mainPriceScale.getVisiblePriceRange === 'function'
+        ? mainPriceScale.getVisiblePriceRange()
+        : null;
+      if (!visiblePriceRange) return { error: 'visual_price_range_unavailable' };
+      var state = {
+        time_scale: {
+          bar_spacing: timeScale.barSpacing(),
+          right_offset: timeScale.rightOffset(),
+          width: timeScale.width(),
+        },
+        main_price_scale: {
+          auto_scale: mainPriceScale.isAutoScale(),
+          visible_price_range: visiblePriceRange,
+        },
+      };
+      var numeric = [
+        state.time_scale.bar_spacing,
+        state.time_scale.right_offset,
+        state.time_scale.width,
+        visiblePriceRange && visiblePriceRange.from,
+        visiblePriceRange && visiblePriceRange.to,
+      ];
+      if (numeric.some(function(value) { return typeof value !== 'number' || !Number.isFinite(value); })) {
+        return { error: 'visual_scale_state_not_finite' };
+      }
+      if (state.time_scale.width <= 0 || state.time_scale.bar_spacing <= 0) {
+        return { error: 'visual_time_scale_state_invalid' };
+      }
+      if (visiblePriceRange.from >= visiblePriceRange.to) {
+        return { error: 'visual_price_scale_state_invalid' };
+      }
+      if (typeof state.main_price_scale.auto_scale !== 'boolean') {
+        return { error: 'visual_auto_scale_state_invalid' };
+      }
+      return state;
+    })()
+  `;
+}
+
+function _validateVisualState(payload) {
+  const timeScale = payload?.time_scale;
+  const priceScale = payload?.main_price_scale;
+  const visiblePriceRange = priceScale?.visible_price_range;
+  const numbers = [
+    timeScale?.bar_spacing,
+    timeScale?.right_offset,
+    timeScale?.width,
+    visiblePriceRange?.from,
+    visiblePriceRange?.to,
+  ];
+  if (
+    !payload || payload.error || !timeScale || !priceScale || !visiblePriceRange
+    || numbers.some((value) => typeof value !== 'number' || !Number.isFinite(value))
+    || timeScale.width <= 0
+    || timeScale.bar_spacing <= 0
+    || visiblePriceRange.from >= visiblePriceRange.to
+    || typeof priceScale.auto_scale !== 'boolean'
+  ) {
+    return null;
+  }
+  return {
+    time_scale: {
+      bar_spacing: timeScale.bar_spacing,
+      right_offset: timeScale.right_offset,
+      width: timeScale.width,
+    },
+    main_price_scale: {
+      auto_scale: priceScale.auto_scale,
+      visible_price_range: {
+        from: visiblePriceRange.from,
+        to: visiblePriceRange.to,
+      },
+    },
+  };
+}
+
+function _invalidVisualState() {
+  throw new ClassifiedError(
+    CATEGORIES.API_UNEXPECTED,
+    'TradingView returned an invalid or incomplete visual scale state.',
+  );
+}
+
+function _optionalFinite(value, name) {
+  if (value === undefined) return undefined;
+  if (value === null) {
+    throw new ClassifiedError(CATEGORIES.INVALID_ARGUMENT, `${name} must be a finite number`);
+  }
+  return requireFinite(value, name);
+}
+
 export async function getVisibleRange({ _deps } = {}) {
   const { evaluate } = _resolve(_deps);
   const result = await evaluate(`
     (function() {
       var chart = ${CHART_API};
-      return { visible_range: chart.getVisibleRange(), bars_range: chart.getVisibleBarsRange() };
+      return {
+        visible_range: chart.getVisibleRange(),
+        bars_range: chart.getVisibleBarsRange(),
+        visual_state: ${_visualStateExpression()},
+      };
     })()
   `);
-  return { success: true, visible_range: result.visible_range, bars_range: result.bars_range };
+  const visualState = _validateVisualState(result?.visual_state);
+  if (!visualState) _invalidVisualState();
+  return {
+    success: true,
+    visible_range: result.visible_range,
+    bars_range: result.bars_range,
+    visual_state: visualState,
+  };
 }
 
-export async function setVisibleRange({ from, to, _deps }) {
+export async function setVisibleRange({
+  from,
+  to,
+  bar_spacing,
+  right_offset,
+  main_price_auto_scale,
+  main_price_from,
+  main_price_to,
+  _deps,
+}) {
   const { evaluate, sleep } = _resolve(_deps);
   const f = requireFinite(from, 'from');
   const t = requireFinite(to, 'to');
   if (f >= t) throw new ClassifiedError(CATEGORIES.INVALID_ARGUMENT, 'from must be earlier than to');
+
+  const requestedBarSpacing = _optionalFinite(bar_spacing, 'bar_spacing');
+  if (requestedBarSpacing !== undefined && requestedBarSpacing <= 0) {
+    throw new ClassifiedError(CATEGORIES.INVALID_ARGUMENT, 'bar_spacing must be greater than 0');
+  }
+  const requestedRightOffset = _optionalFinite(right_offset, 'right_offset');
+  if (main_price_auto_scale !== undefined && typeof main_price_auto_scale !== 'boolean') {
+    throw new ClassifiedError(CATEGORIES.INVALID_ARGUMENT, 'main_price_auto_scale must be a boolean');
+  }
+  const hasPriceFrom = main_price_from !== undefined;
+  const hasPriceTo = main_price_to !== undefined;
+  if (hasPriceFrom !== hasPriceTo) {
+    throw new ClassifiedError(
+      CATEGORIES.INVALID_ARGUMENT,
+      'main_price_from and main_price_to must be supplied together',
+    );
+  }
+  const requestedPriceFrom = hasPriceFrom ? _optionalFinite(main_price_from, 'main_price_from') : undefined;
+  const requestedPriceTo = hasPriceTo ? _optionalFinite(main_price_to, 'main_price_to') : undefined;
+  if (
+    requestedPriceFrom !== undefined
+    && requestedPriceTo !== undefined
+    && requestedPriceFrom >= requestedPriceTo
+  ) {
+    throw new ClassifiedError(
+      CATEGORIES.INVALID_ARGUMENT,
+      'main_price_from must be earlier than main_price_to',
+    );
+  }
+  if (main_price_auto_scale === true && requestedPriceFrom !== undefined) {
+    throw new ClassifiedError(
+      CATEGORIES.INVALID_ARGUMENT,
+      'main price auto-scale cannot be combined with a manual price range',
+    );
+  }
 
   const history = { requests: 0, earliest_loaded: null, reached_from: false, exhausted: false };
   for (let attempt = 0; attempt < 25; attempt++) {
@@ -557,22 +722,71 @@ export async function setVisibleRange({ from, to, _deps }) {
       ts.zoomToBarsRange(fromIdx, toIdx);
     })()
   `);
+  const visualStateRequested = (
+    requestedBarSpacing !== undefined
+    || requestedRightOffset !== undefined
+    || main_price_auto_scale !== undefined
+    || requestedPriceFrom !== undefined
+  );
+  if (visualStateRequested) {
+    const visualApply = await evaluate(`
+      (function() {
+        var chart = ${CHART_API};
+        var timeScale = typeof chart.getTimeScale === 'function' ? chart.getTimeScale() : null;
+        var panes = typeof chart.getPanes === 'function' ? chart.getPanes() : null;
+        var firstPane = Array.isArray(panes) ? panes[0] : null;
+        var mainPriceScale = firstPane && typeof firstPane.getMainSourcePriceScale === 'function'
+          ? firstPane.getMainSourcePriceScale()
+          : null;
+        var error = null;
+        if (${requestedBarSpacing !== undefined || requestedRightOffset !== undefined} && !timeScale) {
+          error = 'time_scale_api_unavailable';
+        }
+        if (${main_price_auto_scale === true || requestedPriceFrom !== undefined || main_price_auto_scale === false ? 'true' : 'false'}) {
+          if (!mainPriceScale) error = 'main_price_scale_api_unavailable';
+        }
+        if (!error) {
+          ${requestedBarSpacing !== undefined ? `timeScale.setBarSpacing(${requestedBarSpacing});` : ''}
+          ${requestedRightOffset !== undefined ? `timeScale.setRightOffset(${requestedRightOffset});` : ''}
+          ${requestedPriceFrom !== undefined ? `mainPriceScale.setAutoScale(false); mainPriceScale.setVisiblePriceRange({ from: ${requestedPriceFrom}, to: ${requestedPriceTo} });` : ''}
+          ${main_price_auto_scale === true ? 'mainPriceScale.setAutoScale(true);' : ''}
+          ${main_price_auto_scale === false && requestedPriceFrom === undefined ? 'mainPriceScale.setAutoScale(false);' : ''}
+        }
+        return error ? { success: false, error: error } : { success: true };
+      })()
+    `);
+    if (visualApply?.success !== true) {
+      throw new ClassifiedError(
+        CATEGORIES.API_UNEXPECTED,
+        `TradingView visual scale application failed: ${visualApply?.error || 'unknown error'}`,
+      );
+    }
+  }
   await sleep(500);
   const actual = await evaluate(`
     (function() {
       var chart = ${CHART_API};
-      try { var r = chart.getVisibleRange(); return { from: r.from || 0, to: r.to || 0 }; }
+      try {
+        var r = chart.getVisibleRange();
+        return {
+          visible_range: { from: r.from || 0, to: r.to || 0 },
+          visual_state: ${_visualStateExpression()},
+        };
+      }
       catch(e) { return { from: 0, to: 0, error: e.message }; }
     })()
   `);
-  const actualRange = actual || { from: 0, to: 0 };
+  const actualRange = actual?.visible_range || { from: 0, to: 0 };
   const complete = !!actualRange.from && actualRange.from <= f;
+  const visualState = _validateVisualState(actual?.visual_state);
+  if (!visualState) _invalidVisualState();
   return {
     success: true,
     complete,
     requested: { from: f, to: t },
     actual: actualRange,
     history,
+    visual_state: visualState,
     ...(complete ? {} : { note: 'TradingView could not load the entire requested range; actual shows the range that was available.' }),
   };
 }

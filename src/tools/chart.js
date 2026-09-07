@@ -51,8 +51,23 @@ export function registerChartTools(server) {
   server.tool('chart_set_visible_range', 'Zoom the chart to a specific date range (unix timestamps)', {
     from: z.coerce.number().describe('Start of range (unix timestamp in seconds)'),
     to: z.coerce.number().describe('End of range (unix timestamp in seconds)'),
-  }, async ({ from, to }) => {
-    try { return jsonResult(await core.setVisibleRange({ from, to })); }
+    bar_spacing: z.coerce.number().optional().describe('Optional time-scale bar spacing; must be finite and greater than 0'),
+    right_offset: z.coerce.number().optional().describe('Optional time-scale right offset; must be finite'),
+    main_price_auto_scale: z.boolean().optional().describe('Optional main source price-scale auto/manual mode'),
+    main_price_from: z.coerce.number().optional().describe('Optional manual main source price range lower bound'),
+    main_price_to: z.coerce.number().optional().describe('Optional manual main source price range upper bound'),
+  }, async ({ from, to, bar_spacing, right_offset, main_price_auto_scale, main_price_from, main_price_to }) => {
+    try {
+      return jsonResult(await core.setVisibleRange({
+        from,
+        to,
+        bar_spacing,
+        right_offset,
+        main_price_auto_scale,
+        main_price_from,
+        main_price_to,
+      }));
+    }
     catch (err) { return errorResult(err); }
   });
 

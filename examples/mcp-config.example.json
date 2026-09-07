@@ -1,7 +1,16 @@
 {
+  "_comment": "Hand-written MCP config. If you are BUNDLING tvcontrol inside a desktop app, read docs/EMBEDDING.md instead: spawn process.execPath with an absolute path to src/server.js, never the tvcontrol bin by name.",
   "mcpServers": {
     "tvcontrol": {
       "command": "node",
+      "args": ["/absolute/path/to/tvcontrol/src/server.js"],
+      "env": {
+        "TV_MCP_TELEMETRY": "0"
+      }
+    },
+    "tvcontrol-if-node-is-not-on-your-path": {
+      "_comment": "Node installed via nvm, fnm, volta or asdf is not on a bare PATH, and a host that scrubs the environment will spawn with exit 127 and 'env: node: No such file or directory'. Use an absolute node path. Find yours with: command -v node",
+      "command": "/absolute/path/to/node",
       "args": ["/absolute/path/to/tvcontrol/src/server.js"],
       "env": {
         "TV_MCP_TELEMETRY": "0"

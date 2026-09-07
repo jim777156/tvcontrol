@@ -2,6 +2,30 @@
 
 All notable changes to TVControl are documented here. This project follows [Semantic Versioning](https://semver.org/).
 
+## [2.4.9] - 2026-09-08
+
+### Added
+
+- **`docs/EMBEDDING.md` — the spawn contract for host applications**, shipped in the tarball
+  so a host author with an installed package can read it. It exists because both embedding
+  failures we have seen happen *before* the server's first JSON-RPC frame, so neither can
+  report itself and both surface as a bare `-32000: Connection closed`.
+
+  The one that is still live: a host that spawns the `tvcontrol` bin with a scrubbed
+  environment exits **127** with `env: node: No such file or directory`. The shebang is
+  `#!/usr/bin/env node`, and node installed through nvm, fnm, volta or asdf is never on a
+  bare PATH.
+
+  This cannot be fixed inside the package. The kernel resolves the shebang before a line of
+  our code runs, and repointing it at a shell that self-locates node would make npm's Windows
+  `.cmd` shim invoke `sh` — `cmd-shim` takes the interpreter from the shebang verbatim. That
+  would trade a conditional POSIX failure for a certain Windows one.
+
+  The host already holds a runtime it can be sure exists: its own. The contract is to spawn
+  `process.execPath` with an absolute path to `src/server.js`, plus `ELECTRON_RUN_AS_NODE=1`
+  on an Electron host. `examples/mcp-config.example.json` now carries an absolute-node variant
+  for the same reason, and `tests/embedding_contract.test.js` holds both to it.
+
 ## [2.4.8] - 2026-09-08
 
 ### Fixed

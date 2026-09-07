@@ -3,8 +3,8 @@ import { jsonResult, errorResult } from './_format.js';
 import * as core from '../core/drawing.js';
 
 export function registerDrawingTools(server) {
-  server.tool('draw_shape', 'Draw a shape/line on the chart', {
-    shape: z.string().describe('Shape type: horizontal_line, vertical_line, trend_line, rectangle, text'),
+  server.tool('draw_shape', 'Draw a shape/line on the chart. The created shape name is read back and an unrecognised name is REFUSED rather than silently becoming a flag.', {
+    shape: z.string().describe('Shape type. Verified on Desktop 3.3.0: horizontal_line, vertical_line, horizontal_ray, ray, cross_line, trend_line, rectangle, text, note, callout, balloon, price_label, arrow_up, arrow_down, flag, long_position, short_position, fib_retracement, anchored_vwap, fixed_range_volume_profile. An unknown name is refused, not silently drawn as a flag. For long_position/short_position, overrides takes stopLevel and profitLevel IN TICKS plus riskDisplayMode and alwaysShowStats, and TradingView computes the R:R itself.'),
     point: z.object({ time: z.coerce.number(), price: z.coerce.number() }).describe('{ time: unix_timestamp, price: number }'),
     point2: z.object({ time: z.coerce.number(), price: z.coerce.number() }).optional().describe('Second point for two-point shapes (trend_line, rectangle)'),
     overrides: z.string().optional().describe('JSON string of style overrides (e.g., \'{"linecolor": "#ff0000", "linewidth": 2}\')'),

@@ -22,6 +22,11 @@ function exit(code) {
   process.exit(code);
 }
 
+/** Test seam: the live registry, so CLI/MCP parity can be executed rather than grepped. */
+export function _registeredCommands() {
+  return commands;
+}
+
 export function register(name, config) {
   if (commands.has(name)) {
     throw new Error(`Duplicate CLI command registration: ${name}`);

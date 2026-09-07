@@ -3,10 +3,11 @@ import { jsonResult, errorResult } from './_format.js';
 import * as core from '../core/replay.js';
 
 export function registerReplayTools(server) {
-  server.tool('replay_start', 'Start bar replay mode, optionally at a specific date', {
+  server.tool('replay_start', 'Start bar replay mode, optionally at a specific date. A date outside this symbol/timeframe replay depth is REFUSED rather than silently relocated - every read taken after a relocation is correct for a date you did not ask for.', {
     date: z.string().optional().describe('Date to start replay from (YYYY-MM-DD format). If omitted, selects first available date.'),
-  }, async ({ date }) => {
-    try { return jsonResult(await core.start({ date })); }
+    allow_relocation: z.coerce.boolean().optional().describe('Accept a cursor TradingView moved to a different date because the requested one is outside replay depth. The result still carries relocated:true and the real current_date.'),
+  }, async ({ date, allow_relocation }) => {
+    try { return jsonResult(await core.start({ date, allow_relocation })); }
     catch (err) { return errorResult(err); }
   });
 

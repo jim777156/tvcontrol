@@ -27,7 +27,7 @@ export async function drawShape({ shape, point, point2, overrides: overridesRaw,
   const p1time = requireFinite(point.time, 'point.time');
   const p1price = requireFinite(point.price, 'point.price');
 
-  const before = await evaluate(`${apiPath}.getAllShapes().map(function(s) { return s.id; })`);
+  const before = await evaluate(`${apiPath}.getAllShapes().map(function(s) { return { id: s.id, name: s.name }; })`);
 
   if (point2) {
     const p2time = requireFinite(point2.time, 'point2.time');
@@ -48,10 +48,100 @@ export async function drawShape({ shape, point, point2, overrides: overridesRaw,
   }
 
   await new Promise(r => setTimeout(r, 200));
-  const after = await evaluate(`${apiPath}.getAllShapes().map(function(s) { return s.id; })`);
-  const newId = (after || []).find(id => !(before || []).includes(id)) || null;
-  const result = { entity_id: newId };
-  return { success: true, shape, entity_id: result?.entity_id };
+  // ISSUE #8: AN UNKNOWN SHAPE NAME DOES NOT FAIL, IT BECOMES A FLAG.
+  //
+  // TradingView falls back to a default for a name it does not recognise, and
+  // this returned {success: true, shape: "not_a_real_shape"} with a real entity
+  // id. draw_get_properties on that id said name: "flag". So a typo silently
+  // produced a flag at the right coordinates, and the result echoed the name
+  // you ASKED for rather than the one you got - which is the whole bug: the
+  // response was built from the request, not from a read.
+  //
+  // The before/after diff already finds the new id, so the created shape's own
+  // name is one property away. Read it, and report both.
+  const after = await evaluate(`${apiPath}.getAllShapes().map(function(s) { return { id: s.id, name: s.name }; })`);
+  const beforeIds = new Set((before || []).map((entry) => (entry && typeof entry === 'object' ? entry.id : entry)));
+  const created = (after || []).find((entry) => !beforeIds.has(entry?.id)) || null;
+  const newId = created?.id || null;
+  const createdName = created?.name ?? null;
+
+  if (!newId) {
+    throw new ClassifiedError(
+      CATEGORIES.API_UNEXPECTED,
+      `TradingView accepted shape "${shape}" but no new drawing appeared on the chart`,
+      { hint: 'Check the coordinates are inside the loaded range, and that the chart is not in a state that rejects drawings.' },
+    );
+  }
+
+  // A name that came back different from the one requested is TradingView's
+  // fallback, not our drawing. Fail closed: a caller that wanted a rectangle and
+  // silently got a flag has a wrong chart and no way to know.
+  if (createdName && !_shapeNameMatches(shape, createdName)) {
+    // SETUP-VERIFIED CLEANUP: this removal runs only because the creation was
+    // verifiably read back above, so it can never delete something it did not
+    // make. Leaving the wrong drawing on the operator's chart and reporting an
+    // error would be its own small mess.
+    let removed = false;
+    try {
+      await evaluate(`${apiPath}.removeEntity(${safeString(newId)})`);
+      const remaining = await evaluate(`${apiPath}.getAllShapes().map(function(s) { return s.id; })`);
+      removed = !(remaining || []).includes(newId);
+    } catch (_) {
+      removed = false;
+    }
+    throw new ClassifiedError(
+      CATEGORIES.INVALID_ARGUMENT,
+      `"${shape}" is not a shape TradingView recognises: it silently fell back to "${createdName}". ` +
+        (removed
+          ? 'The wrong drawing was removed from the chart.'
+          : `The wrong drawing is STILL ON THE CHART as ${newId} and could not be removed; delete it with draw_remove_one.`),
+      {
+        hint: 'Check the shape name. draw_list shows what is on the chart.',
+        shape_requested: shape,
+        shape_created: createdName,
+        entity_id: newId,
+        cleanup_removed: removed,
+      },
+    );
+  }
+
+  return {
+    success: true,
+    shape,
+    shape_created: createdName,
+    entity_id: newId,
+    // Absence of a name is not a mismatch, but it is not verification either.
+    shape_verified: createdName !== null,
+  };
+}
+
+/**
+ * TradingView reports a created shape's name in its own vocabulary, which is
+ * not always character-identical to the argument (`horizontal_line` comes back
+ * as `horzline` on 3.3.0). Compare on the alphanumeric core so a legitimate
+ * spelling difference is not reported as a fallback.
+ */
+export function _shapeNameMatches(requested, created) {
+  const norm = (v) => String(v || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  const a = norm(requested);
+  const b = norm(created);
+  if (!a || !b) return false;
+  if (a === b) return true;
+  const ALIASES = {
+    horizontalline: ['horzline', 'horizontalline'],
+    verticalline: ['vertline', 'verticalline'],
+    horizontalray: ['horzray', 'horizontalray'],
+    trendline: ['trendline'],
+    fibretracement: ['fibretracement'],
+    anchoredvwap: ['anchoredvwap', 'anchoredvwapshape'],
+    longposition: ['longposition', 'riskrewardlong'],
+    shortposition: ['shortposition', 'riskrewardshort'],
+    fixedrangevolumeprofile: ['fixedrangevolumeprofile', 'fixedrangevolumeprofilehorz'],
+  };
+  const accepted = ALIASES[a];
+  if (accepted && accepted.includes(b)) return true;
+  // Substring either way covers TradingView prefixing or suffixing its own kind.
+  return a.includes(b) || b.includes(a);
 }
 
 export async function listDrawings({ _deps } = {}) {

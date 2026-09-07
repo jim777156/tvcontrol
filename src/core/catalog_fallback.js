@@ -8,7 +8,7 @@
 // tests/startup_resilience.test.js asserts this file matches the live scan and
 // package.json, so it fails the build rather than going quietly stale.
 
-export const FALLBACK_VERSION = '2.4.9';
+export const FALLBACK_VERSION = '2.5.0';
 
 export const FALLBACK_TOOL_CATALOG = Object.freeze([
   'alert_create',
@@ -62,6 +62,7 @@ export const FALLBACK_TOOL_CATALOG = Object.freeze([
   'pine_compile',
   'pine_get_console',
   'pine_get_errors',
+  'pine_get_script_source',
   'pine_get_source',
   'pine_list_scripts',
   'pine_new',

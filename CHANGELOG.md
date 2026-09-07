@@ -2,6 +2,96 @@
 
 All notable changes to TVControl are documented here. This project follows [Semantic Versioning](https://semver.org/).
 
+## [2.5.0] - 2026-09-08
+
+Every open issue from the external bug reports (#3 to #11), closed. Eight of the nine are
+one bug wearing different clothes: a result built from the request instead of from a read.
+
+### Added
+
+- **`pine_get_script_source`** reads a saved Pine Script over the REST API without touching
+  the editor buffer. Requested in #10: reading a saved script is the common case, and routing
+  it through the editor is what puts a script at risk. `pine_open` already fetched over this
+  endpoint before injecting, so this is the same read with the dangerous half removed.
+
+### Fixed
+
+- **`pine_open` pasted source into the previously open script (#11).** `setValue` is a text
+  mutation: it put the target source into whatever buffer was open and left the editor bound
+  to the PREVIOUS script, while returning `{success: true, name: <target>}`. A following
+  `pine_save` wrote the opened script code over the previous one. Four saved scripts on the
+  reporting account ended up sharing one in-code title that way.
+
+  The obvious check does not catch it: comparing the buffer against a known copy of the target
+  passes, because the text really is the target. It proves the fetch, not the binding. The
+  panel title is now read back. A mismatch throws and names both scripts; an unreadable title
+  returns `binding_verified: false` with a warning rather than a confident wrong answer.
+
+- **`pine_open` had no `confirm_overwrite` guard (#10)**, unlike `pine_new` and
+  `pine_set_source`. Opening a script is how an agent reads one, so it is reached for early
+  and often, and it was destroying unsaved work silently. It now runs the same guard, before
+  the fetch: refusing after the buffer is gone is not a guard.
+
+- **An ambiguous script name is now reported, not resolved (#10).** 20 of 53 scripts on the
+  reporting account have a list name and an in-code title that disagree, and one in-code title
+  was shared by four saved scripts. The substring fallback took the first hit and said nothing.
+  It now returns the candidates and refuses.
+
+- **`capture_screenshot` returned a stale frame from a hidden tab (#3).** Chromium suspends
+  canvas compositing for a background tab, so the call returned a real PNG of the right chart
+  showing the wrong data, with the header, quote and clock current while the candles were
+  frozen. Three consecutive captures 40 seconds apart were byte-similar. It now refuses unless
+  the tab is visible; `allow_hidden: true` overrides and says the check was skipped.
+
+- **`capture_screenshot region:"chart"` captured the first pane, not the active one (#4).**
+  `querySelector` takes the first match, so on a 2x2 layout every capture was pane 0 whatever
+  `pane_focus` said. It bit hardest with replay running on the active pane. It now prefers the
+  active pane, reports `pane_selected_by`, and warns loudly when it had to fall back to the
+  first of several.
+
+- **A timed-out readiness check was reported as a failed mutation (#5).** `setSymbol` and
+  `setResolution` have already run by the time the wait expires, so throwing told a caller
+  nothing had changed when everything had, and a caller that retries double-applies. They now
+  return `chart_ready: false` with a note saying not to retry. `indicator_add_from_search`
+  polled nothing: it slept a flat 1500 ms and then diffed the study list, so a study that took
+  ~2 s to appear produced "no new study appeared" on a call that had added it. It now polls to
+  an 8 s deadline, so an empty diff is real evidence of absence.
+
+  The contract, now stated in the tool descriptions: **a thrown error means nothing changed.**
+
+- **`tab_close` was blocked by the unsaved-changes dialog and blamed the tab count (#6).** The
+  dialog is its own CDP page target, invisible to every selector the chart page can run, and
+  the old message read like a selector or window-scoping problem. It cost the reporter most of
+  a session. It is now found by enumerating targets, reported by name, and dismissed so the
+  chart is not left blocked. `discard_unsaved: true` answers it with "Close without saving".
+  "Save and close" is never clicked automatically.
+
+- **`replay_start` silently relocated an out-of-range date (#7).** A 5-minute request for
+  2020-12-08 on CME_MINI:NQ1! put the cursor on 2021-08-22 and returned success, with `date`
+  echoing the request. Every read taken afterwards was then correct for a date the caller never
+  asked for. It now compares the two, refuses beyond a 4-day tolerance (a weekend is not a
+  depth limit), stops replay rather than leaving the caller in a session pointing at the wrong
+  date, and always reports `relocated` and the real `current_date`. `allow_relocation: true`
+  accepts it.
+
+- **Changing timeframe during replay is refused (#7, related).** It left the cursor on the old
+  timeframe, the new series came back empty, and data reads hung on `chart_loading` until
+  replay was stopped.
+
+- **`draw_shape` reported success for an unknown shape and silently created a flag (#8).**
+  TradingView falls back to a default for a name it does not recognise, and the result echoed
+  the name that was asked for. The created shape name is now read back; a mismatch removes the
+  wrong drawing and throws. The `shape` parameter documents the 20 names verified on 3.3.0
+  instead of 5.
+
+- **The CLI can now reach every safety guard (#9).** `expect_title` and `discard_unsaved` on
+  `tv tab close`, `discard_unsaved` on `tv layout switch`, `confirm_overwrite` on `tv pine
+  new/set/open`, `enabled` on `tv replay autoplay`, `overwrite` on `tv state snapshot`,
+  `frequency` and `resolution` on `tv alert create`, `allow_hidden` on `tv screenshot`,
+  `allow_relocation` on `tv replay start`, plus `tv pine source`. Three of these were refusals
+  whose own hint named a flag the CLI did not have, which is a dead end rather than a decision.
+  `tests/cli_mcp_parity.test.js` now executes both sides and compares them.
+
 ## [2.4.9] - 2026-09-08
 
 ### Added

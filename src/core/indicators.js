@@ -6,6 +6,10 @@ import { waitForChartReady as _waitForChartReady } from '../wait.js';
 import { STUDY_RESOLVER_JS } from './_study_ref.js';
 import { ClassifiedError, CATEGORIES } from '../errors.js';
 
+// Measured: a study can take ~2s to register on a busy chart. 1500ms was not a
+// margin, it was a coin flip.
+export const ADD_STUDY_TIMEOUT_MS = 8000;
+
 const CHART_API = 'window.TradingViewApi._activeChartWidgetWV.value()';
 const DIALOG = '[data-name="indicators-dialog"]';
 
@@ -250,18 +254,40 @@ export async function addStudyFromSearch({ query, match, section, _deps } = {}) 
       }
       throw new ClassifiedError(CATEGORIES.STUDY_NOT_FOUND, `${clicked.error}: ${want}`);
     }
-    await deps.wait(1500);
+    await deps.wait(250);
   } finally {
     await _closeDialog(deps.evaluate, deps.wait).catch(() => {});
   }
 
-  const after = await deps.evaluate(`${CHART_API}.getAllStudies().map(function(s){return {id:s.id,name:s.name||s.title||null};})`);
+  // ISSUE #5: A FIXED SLEEP TURNED A SLOW ADD INTO A REPORTED FAILURE.
+  //
+  // This waited a flat 1500ms and then diffed the study list, so a study that
+  // took ~2s to appear produced `TradingView accepted "X" but no new study
+  // appeared` on a call that HAD added it. Observed both directions in one
+  // session: that error on a call that worked, and the identical error on a
+  // later call that added nothing. The message could not tell them apart, and a
+  // caller that retries on error ends up with the indicator twice.
+  //
+  // Poll for the post-condition instead. A deadline reached with nothing new is
+  // then real evidence of absence, not evidence that we did not wait long
+  // enough.
   const beforeSet = new Set(before || []);
-  const added = (after || []).filter((study) => !beforeSet.has(study.id));
+  let added = [];
+  const deadline = Date.now() + ADD_STUDY_TIMEOUT_MS;
+  let after = null;
+  for (;;) {
+    after = await deps.evaluate(`${CHART_API}.getAllStudies().map(function(s){return {id:s.id,name:s.name||s.title||null};})`);
+    added = (after || []).filter((study) => !beforeSet.has(study.id));
+    if (added.length > 0) break;
+    if (Date.now() >= deadline) break;
+    await deps.wait(250);
+  }
   if (added.length === 0) {
-    throw new ClassifiedError(CATEGORIES.API_UNEXPECTED, `TradingView accepted "${clicked?.clicked || want}" but no new study appeared`, {
-      hint: 'Re-check chart_get_state before retrying to avoid adding a duplicate.',
-    });
+    throw new ClassifiedError(
+      CATEGORIES.API_UNEXPECTED,
+      `TradingView accepted "${clicked?.clicked || want}" but no new study appeared within ${Math.round(ADD_STUDY_TIMEOUT_MS / 1000)}s. Nothing was added.`,
+      { hint: 'The study list is unchanged, so a retry is safe. If it keeps failing, check the study name with indicator_search.' },
+    );
   }
   return {
     success: true,

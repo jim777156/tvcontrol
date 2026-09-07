@@ -19,7 +19,11 @@ register('tab', {
     }],
     ['close', {
       description: 'Close the current tab',
-      handler: () => core.closeTab(),
+      options: {
+        expect_title: { type: 'string', short: 't', description: 'Refuse unless the active tab title contains this. Closing a chart tab cannot be undone.' },
+        discard_unsaved: { type: 'boolean', description: 'Answer the unsaved-layout dialog with "Close without saving" and LOSE those changes' },
+      },
+      handler: (opts) => core.closeTab({ expect_title: opts.expect_title, discard_unsaved: opts.discard_unsaved }),
     }],
     ['switch', {
       description: 'Switch to a tab by index',

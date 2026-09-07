@@ -17,7 +17,7 @@ function _resolve(deps) {
   };
 }
 
-export async function start({ date, _deps } = {}) {
+export async function start({ date, allow_relocation = false, _deps } = {}) {
   const { evaluate, getReplayApi } = _resolve(_deps);
   const rp = await getReplayApi();
   const available = await evaluate(wv(`${rp}.isReplayAvailable()`));
@@ -61,7 +61,94 @@ export async function start({ date, _deps } = {}) {
     );
   }
 
-  return { success: true, replay_started: true, date: date || '(first available)', current_date: currentDate };
+  // ISSUE #7: AN OUT-OF-RANGE DATE IS SILENTLY RELOCATED.
+  //
+  // Measured: replay_start on CME_MINI:NQ1! at 5m for 2020-12-08 put the cursor
+  // on 2021-08-22 and returned {success: true, date: "2020-12-08"}. `date`
+  // echoed the REQUEST; `current_date` was the truth, in a different unit, and
+  // nothing said they disagreed. TradingView shows a "data point unavailable,
+  // the chart was moved to the first point available for playback" toast that
+  // the API never surfaces.
+  //
+  // Every read taken afterwards is then correct for a date the caller did not
+  // ask for, which for point-in-time work invalidates the entire result. It is
+  // per symbol, not a global depth rule: the same 5m request on
+  // COINBASE:ETHUSD reaches 2020 and returns genuine bars.
+  const relocation = _relocation(date, currentDate);
+
+  if (relocation.relocated && relocation.days > RELOCATION_TOLERANCE_DAYS && !allow_relocation) {
+    // Stop replay rather than leave the caller in a session pointing at a date
+    // they did not ask for and may not notice.
+    let cleanupErr;
+    try { await evaluate(`${rp}.stopReplay()`); } catch (e) { cleanupErr = e; }
+    throw new ClassifiedError(
+      CATEGORIES.INVALID_ARGUMENT,
+      `Replay could not reach ${relocation.requested_date} for this symbol and timeframe: TradingView relocated the cursor to ${relocation.current_date}, ${relocation.days} days away. Replay was stopped.`,
+      {
+        hint: 'Replay depth is per symbol and per timeframe. Use a higher timeframe or a later date, or pass allow_relocation:true to accept the relocated cursor.',
+        requested_date: relocation.requested_date,
+        current_date: relocation.current_date,
+        days_away: relocation.days,
+        ...(cleanupErr ? { cause: cleanupErr } : {}),
+      },
+    );
+  }
+
+  return {
+    success: true,
+    replay_started: true,
+    // Kept for compatibility, but it is the request. `current_date` is the truth.
+    date: date || '(first available)',
+    requested_date: relocation.requested_date,
+    current_date: currentDate,
+    current_date_iso: relocation.current_date,
+    relocated: relocation.relocated,
+    ...(relocation.relocated
+      ? {
+        days_away: relocation.days,
+        warning: `The cursor is on ${relocation.current_date}, not the requested ${relocation.requested_date}. Any point-in-time read is for the date the cursor is actually on.`,
+      }
+      : {}),
+  };
+}
+
+// A weekend or a holiday run legitimately moves the cursor a few days. Beyond
+// that it is a depth limit, and a depth limit is not a rounding error.
+export const RELOCATION_TOLERANCE_DAYS = 4;
+
+/**
+ * Compare what was asked for against where the cursor actually landed.
+ *
+ * currentDate is TradingView's replay cursor in SECONDS. Comparing it to a
+ * requested midnight timestamp in milliseconds is how a unit mismatch becomes a
+ * false "relocated" on every single call, so both sides are normalised to a
+ * calendar day in UTC before they are compared.
+ */
+export function _relocation(requestedDate, currentDate) {
+  // Number(null) is 0, which is finite and reads as 1970. A cursor we could not
+  // read must stay unknown, not become the epoch and then a 50-year relocation.
+  const seconds = (currentDate === null || currentDate === undefined || currentDate === '')
+    ? NaN
+    : Number(currentDate);
+  const asIso = (v) => (Number.isFinite(v) && v > 0 ? new Date(v * 1000).toISOString() : null);
+  const currentIso = asIso(seconds);
+  if (!requestedDate || !currentIso) {
+    return { relocated: false, days: 0, requested_date: requestedDate || null, current_date: currentIso };
+  }
+  const requestedMs = new Date(requestedDate).getTime();
+  if (!Number.isFinite(requestedMs)) {
+    return { relocated: false, days: 0, requested_date: requestedDate, current_date: currentIso };
+  }
+  const DAY = 86_400_000;
+  const requestedDay = Math.floor(requestedMs / DAY);
+  const landedDay = Math.floor(seconds * 1000 / DAY);
+  const days = Math.abs(landedDay - requestedDay);
+  return {
+    relocated: days > 0,
+    days,
+    requested_date: new Date(requestedDay * DAY).toISOString().slice(0, 10),
+    current_date: currentIso,
+  };
 }
 
 export async function step({ _deps } = {}) {

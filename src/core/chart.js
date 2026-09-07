@@ -1,7 +1,7 @@
 /**
  * Core chart control logic.
  */
-import { evaluate as _evaluate, evaluateAsync as _evaluateAsync, safeString, requireFinite } from '../connection.js';
+import { evaluate as _evaluate, evaluateAsync as _evaluateAsync, getReplayApi as _getReplayApi, safeString, requireFinite } from '../connection.js';
 import { STUDY_RESOLVER_JS, isUsableStudyId } from './_study_ref.js';
 import { waitForChartReady as _waitForChartReady } from '../wait.js';
 import { ClassifiedError, CATEGORIES } from '../errors.js';
@@ -15,8 +15,11 @@ import { ClassifiedError, CATEGORIES } from '../errors.js';
 const CHART_API = 'window.TradingViewApi._activeChartWidgetWV.value()';
 
 function _resolve(deps) {
+  const evaluate = deps?.evaluate || _evaluate;
+  const getReplayApi = deps?.getReplayApi || _getReplayApi;
   return {
-    evaluate: deps?.evaluate || _evaluate,
+    evaluate,
+    getReplayApi,
     evaluateAsync: deps?.evaluateAsync || _evaluateAsync,
     waitForChartReady: deps?.waitForChartReady || _waitForChartReady,
     // Under TV_MCP_NO_CDP there is no browser, so there is nothing to settle
@@ -25,6 +28,21 @@ function _resolve(deps) {
       ? (async () => {})
       : ((ms) => new Promise((resolve) => setTimeout(resolve, ms)))),
     fetch: deps?.fetch || globalThis.fetch,
+    // Reading replay state must never be what breaks a timeframe change: if the
+    // probe itself fails, treat replay as inactive and let the change proceed.
+    //
+    // Built from the RESOLVED evaluate/getReplayApi, not the module-level ones.
+    // Reaching past injected deps here is the fail-open dependency injection
+    // this project has already been bitten by: a "unit" test that quietly opens
+    // a real CDP connection.
+    isReplayActive: deps?.isReplayActive || (async () => {
+      try {
+        const rp = await getReplayApi();
+        return await evaluate(`(function(){ try { return !!(${rp}.isReplayStarted()); } catch (e) { return false; } })()`) === true;
+      } catch (_) {
+        return false;
+      }
+    }),
   };
 }
 
@@ -260,6 +278,23 @@ export async function getState({ _deps } = {}) {
   return out;
 }
 
+/**
+ * A TIMED-OUT READINESS CHECK IS NOT A FAILED MUTATION.
+ *
+ * Issue #5: setSymbol/setResolution have ALREADY RUN by the time the readiness
+ * wait expires. Throwing there says "nothing changed" to a caller for whom
+ * everything changed, and a caller that retries on error double-applies.
+ * Measured: `Chart did not finish loading ...` while chart_get_state
+ * immediately afterwards showed the new symbol and timeframe.
+ *
+ * So distinguish the two states the old code collapsed:
+ *   applied, ready      -> success, chart_ready: true
+ *   applied, not ready  -> success, chart_ready: false, and say so
+ *   not applied         -> throw, and only here
+ *
+ * The contract a caller can now rely on, and the tool descriptions say it:
+ * A THROWN ERROR MEANS NOTHING CHANGED.
+ */
 export async function setSymbol({ symbol, _deps }) {
   const { evaluateAsync, waitForChartReady } = _resolve(_deps);
   const applied = await evaluateAsync(awaited(
@@ -272,12 +307,32 @@ export async function setSymbol({ symbol, _deps }) {
     );
   }
   const ready = await waitForChartReady(symbol);
-  if (!ready) throw new ClassifiedError(CATEGORIES.CHART_LOADING, `Chart did not finish loading symbol ${symbol}`);
-  return { success: true, symbol, chart_ready: ready };
+  return {
+    success: true,
+    symbol,
+    chart_ready: Boolean(ready),
+    ...(ready ? {} : {
+      note: `setSymbol(${symbol}) was applied, but the chart had not finished loading within the wait. The change IS in effect - do not retry, that would apply it twice. Poll chart_get_state, or call data_get_ohlcv once the chart settles.`,
+    }),
+  };
 }
 
 export async function setTimeframe({ timeframe, _deps }) {
-  const { evaluateAsync, waitForChartReady } = _resolve(_deps);
+  const { evaluateAsync, waitForChartReady, isReplayActive } = _resolve(_deps);
+
+  // ISSUE #7, the related half: changing timeframe DURING replay leaves the
+  // cursor from the previous timeframe and the new series comes back empty.
+  // replay_status then reports is_replay_started: true with a stale
+  // current_date, and data_get_ohlcv throws chart_loading indefinitely until
+  // replay is stopped. Refusing costs one call; the diagnosis cost a session.
+  if (await isReplayActive()) {
+    throw new ClassifiedError(
+      CATEGORIES.INVALID_ARGUMENT,
+      `Refusing to change timeframe to ${timeframe} while replay is running: the cursor stays on the old timeframe, the new series comes back empty, and data reads then hang on chart_loading until replay is stopped.`,
+      { hint: 'Call replay_stop first, change the timeframe, then replay_start again at the date you want.' },
+    );
+  }
+
   const applied = await evaluateAsync(awaited(
     `${CHART_API}.setResolution(${safeString(timeframe)}, {})`,
   ));
@@ -288,8 +343,14 @@ export async function setTimeframe({ timeframe, _deps }) {
     );
   }
   const ready = await waitForChartReady(null, timeframe);
-  if (!ready) throw new ClassifiedError(CATEGORIES.CHART_LOADING, `Chart did not finish loading timeframe ${timeframe}`);
-  return { success: true, timeframe, chart_ready: ready };
+  return {
+    success: true,
+    timeframe,
+    chart_ready: Boolean(ready),
+    ...(ready ? {} : {
+      note: `setResolution(${timeframe}) was applied, but the chart had not finished loading within the wait. The change IS in effect - do not retry, that would apply it twice.`,
+    }),
+  };
 }
 
 export async function setType({ chart_type, _deps }) {

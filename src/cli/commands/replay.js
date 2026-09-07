@@ -9,8 +9,9 @@ register('replay', {
       description: 'Start replay mode',
       options: {
         date: { type: 'string', short: 'd', description: 'Start date (YYYY-MM-DD)' },
+        allow_relocation: { type: 'boolean', description: 'Accept a cursor TradingView moved because the date is outside replay depth for this symbol/timeframe' },
       },
-      handler: (opts) => core.start({ date: opts.date }),
+      handler: (opts) => core.start({ date: opts.date, allow_relocation: opts.allow_relocation }),
     }],
     ['step', {
       description: 'Advance one bar in replay',
@@ -25,11 +26,15 @@ register('replay', {
       handler: () => core.status(),
     }],
     ['autoplay', {
-      description: 'Toggle autoplay in replay mode',
+      description: 'Turn autoplay on or off in replay mode. Pass --enabled/--no-enabled to say which state you want; omit it to flip.',
       options: {
         speed: { type: 'string', short: 's', description: 'Autoplay delay in ms (lower = faster)' },
+        enabled: { type: 'boolean', description: 'Target state. Without it this only toggles, so "turn autoplay off" is a guess about the current state.' },
       },
-      handler: (opts) => core.autoplay({ speed: opts.speed ? Number(opts.speed) : undefined }),
+      handler: (opts) => core.autoplay({
+        speed: opts.speed ? Number(opts.speed) : undefined,
+        enabled: opts.enabled,
+      }),
     }],
     ['trade', {
       description: 'Execute a trade in replay mode (buy, sell, close)',

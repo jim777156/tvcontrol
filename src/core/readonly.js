@@ -127,6 +127,10 @@ export const READONLY_TOOLS = Object.freeze([
   'pine_get_errors',
   'pine_get_console',
   'pine_list_scripts',
+  // Reads a saved script over the REST API and never touches the editor buffer.
+  // It is in the same egress class as pine_get_source, which is already here:
+  // it can read a private script, so it is a read, not a mutation.
+  'pine_get_script_source',
   'pine_analyze',
 
   // Replay status is a read; every other replay verb changes chart mode.

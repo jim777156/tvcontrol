@@ -9,10 +9,11 @@ register('state', {
       description: 'Capture current chart state to a named snapshot',
       options: {
         name: { type: 'string', short: 'n', description: 'Snapshot name' },
+        overwrite: { type: 'boolean', description: 'Replace an existing snapshot of the same name' },
       },
       handler: (opts) => {
         _arg(opts.name, 'Name required. Usage: tv state snapshot --name <name>');
-        return core.snapshot({ name: opts.name });
+        return core.snapshot({ name: opts.name, overwrite: opts.overwrite });
       },
     }],
     ['restore', {

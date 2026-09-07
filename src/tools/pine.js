@@ -49,11 +49,19 @@ export function registerPineTools(server) {
     catch (err) { return errorResult(err); }
   });
 
-  server.tool('pine_open', 'Open a saved Pine Script by name', {
-    name: z.string().describe('Name of the saved script to open (case-insensitive match)'),
+  server.tool('pine_open', 'Load a saved Pine Script into the editor buffer. THIS REPLACES THE BUFFER and does not guarantee the editor is bound to that script - check `binding_verified` before any pine_save. To READ a script with no buffer risk, use pine_get_script_source instead.', {
+    name: z.string().describe('Name of the saved script to open (case-insensitive; exact name or title wins, an ambiguous substring is refused with candidates)'),
+    confirm_overwrite: z.boolean().optional().describe('Required to replace a buffer that holds real work. Without it the call is refused rather than destroying unsaved code, same as pine_new and pine_set_source.'),
+  }, async ({ name, confirm_overwrite }) => {
+    try { return jsonResult(await core.openScript({ name, confirm_overwrite })); }
+    catch (err) { return errorResult(err); }
+  });
+
+  server.tool('pine_get_script_source', 'Read a saved Pine Script\'s source over the REST API WITHOUT touching the editor buffer. Use this to compare a saved script against a local file or audit what is deployed - it cannot destroy unsaved work and cannot mis-bind the editor.', {
+    name: z.string().describe('Name of the saved script (case-insensitive; an ambiguous substring is refused with candidates)'),
   }, async ({ name }) => {
-    try { return jsonResult(await core.openScript({ name })); }
-    catch (err) { return jsonResult({ success: false, source: 'internal_api', error: err.message }, true); }
+    try { return jsonResult(await core.getScriptSource({ name })); }
+    catch (err) { return errorResult(err); }
   });
 
   server.tool('pine_list_scripts', 'List saved Pine Scripts. Returns a page, not the whole library — pass name_filter to find one by name.', {

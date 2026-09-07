@@ -18,8 +18,9 @@ export function registerTabTools(server) {
 
   server.tool('tab_close', 'Close the currently active chart tab. Names the tab it is about to close and refuses when no tab is marked active. Closing a chart tab cannot be undone through this API, so pass expect_title when it matters which one goes.', {
     expect_title: z.string().optional().describe('The active tab title must contain this, otherwise nothing is closed. Use tab_list first to see the titles.'),
-  }, async ({ expect_title }) => {
-    try { return jsonResult(await core.closeTab({ expect_title })); }
+    discard_unsaved: z.coerce.boolean().optional().describe('Answer TradingView unsaved-layout-changes dialog with "Close without saving" and LOSE those changes. Without this the tab stays open and the dialog is dismissed. "Save and close" is never clicked for you.'),
+  }, async ({ expect_title, discard_unsaved }) => {
+    try { return jsonResult(await core.closeTab({ expect_title, discard_unsaved })); }
     catch (err) { return errorResult(err); }
   });
 

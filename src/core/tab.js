@@ -290,7 +290,73 @@ export async function newTab({ layout, name } = {}) {
   };
 }
 
-export async function closeTab({ expect_title, _deps } = {}) {
+
+/**
+ * THE UNSAVED-CHANGES DIALOG IS ITS OWN CDP PAGE TARGET.
+ *
+ * Issue #6: closing a tab whose layout is dirty opens "Close tab? There are
+ * unsaved changes on your chart layout." with Save and close / Close without
+ * saving. It BLOCKS the close, and tab_close then reported "The close was
+ * clicked but the tab count did not drop (2 -> 2)" - accurate and completely
+ * misleading. It reads like a selector or window-scoping problem, and cost the
+ * reporter most of a session concluding tab_close could not reach tabs in a
+ * second Desktop window.
+ *
+ * It is invisible to every selector the chart page can run: not in the chart
+ * DOM, not in the tab-strip shell. It only appears by enumerating /json/list
+ * and reading document.body.innerText on the other page targets.
+ */
+const UNSAVED_DIALOG_RE = /unsaved changes on your chart layout/i;
+export const DISCARD_BUTTON = 'Close without saving';
+// NEVER clicked automatically. Issue #6: "Whatever the default, it should never
+// be Save and close without being asked." Saving is a decision about the user's
+// layout, not a way to get past a dialog.
+export const SAVE_BUTTON = 'Save and close';
+
+const READ_DIALOG = `
+  (function() {
+    var text = (document.body && document.body.innerText) || '';
+    var buttons = [];
+    var nodes = document.querySelectorAll('button,[role=button]');
+    for (var i = 0; i < nodes.length; i++) {
+      var t = (nodes[i].textContent || '').trim();
+      if (t) buttons.push(t);
+    }
+    return { text: text, buttons: buttons };
+  })()
+`;
+
+export async function _findUnsavedDialog({ targets, withTarget, chartTargetIds = new Set() }) {
+  for (const target of targets || []) {
+    if (target.type !== 'page') continue;
+    if (chartTargetIds.has(target.id)) continue;
+    let seen;
+    try {
+      seen = await withTarget(target.id, (evaluateTarget) => evaluateTarget(READ_DIALOG));
+    } catch (_) {
+      continue; // a target we cannot attach to is not evidence of anything
+    }
+    if (seen && UNSAVED_DIALOG_RE.test(seen.text || '')) {
+      return { target_id: target.id, text: (seen.text || '').trim(), buttons: seen.buttons || [] };
+    }
+  }
+  return null;
+}
+
+async function _clickDialogButton(withTarget, targetId, label) {
+  return withTarget(targetId, (evaluateTarget) => evaluateTarget(`
+    (function() {
+      var want = ${JSON.stringify(label)};
+      var nodes = document.querySelectorAll('button,[role=button]');
+      for (var i = 0; i < nodes.length; i++) {
+        if ((nodes[i].textContent || '').trim() === want) { nodes[i].click(); return true; }
+      }
+      return false;
+    })()
+  `));
+}
+
+export async function closeTab({ expect_title, discard_unsaved = false, _deps } = {}) {
   // THIS CLOSED A CHART TAB THAT HELD LIVE WORK, ON 2026-08-21, DURING ITS OWN TEST.
   //
   // The cause is that closeTab and switchTab do not share an index space.
@@ -303,7 +369,11 @@ export async function closeTab({ expect_title, _deps } = {}) {
   // It also reported success purely from the tab COUNT dropping, which is true
   // whichever tab died. So: name the tab first, and prove THAT tab is the one
   // that went.
-  const snapshot = await _withShell((evaluateShell) => evaluateShell(`
+  const withShell = _deps?.withShell || _withShell;
+  const withTarget = _deps?.withTarget || _withTarget;
+  const listTargets = _deps?.targets || _targets;
+
+  const snapshot = await withShell((evaluateShell) => evaluateShell(`
     (function() {
       var tabs = document.querySelectorAll('.tabs-container .tab');
       var out = { count: tabs.length, active_index: -1, labels: [] };
@@ -345,7 +415,7 @@ export async function closeTab({ expect_title, _deps } = {}) {
     }
   }
 
-  const after = await _withShell(async (evaluateShell) => {
+  const after = await withShell(async (evaluateShell) => {
     const clicked = await evaluateShell(`
       (function() {
         var active = document.querySelector('.tabs-container .tab.active');
@@ -367,11 +437,56 @@ export async function closeTab({ expect_title, _deps } = {}) {
     `);
   });
 
+  let dialog = null;
+  let after2 = after;
   if (!after || after.count >= snapshot.count) {
+    // Before blaming the selector, look for the dialog that is actually holding
+    // the close. A count that did not drop has more than one cause and the old
+    // message named only the wrong one.
+    dialog = await _findUnsavedDialog({ targets: await listTargets(), withTarget }).catch(() => null);
+  }
+
+  if (dialog && !discard_unsaved) {
+    // Leave the chart usable: dismissing is not saving and not discarding, it
+    // is putting the decision back where it belongs. Save and close is never
+    // clicked here.
+    const dismissed = await _clickDialogButton(withTarget, dialog.target_id, 'close-dialog-window').catch(() => false);
+    throw new ClassifiedError(
+      CATEGORIES.INVALID_ARGUMENT,
+      `"${victim}" has unsaved layout changes and TradingView is asking whether to save them, so the tab is still open. ` +
+        (dismissed ? 'The dialog was dismissed and nothing was saved or lost.' : 'The dialog is still on screen.'),
+      {
+        hint: 'Save the layout with layout_save and retry, or pass discard_unsaved:true to close it and lose those changes. "Save and close" is never clicked for you.',
+        dialog_buttons: dialog.buttons,
+      },
+    );
+  }
+
+  if (dialog && discard_unsaved) {
+    const clicked = await _clickDialogButton(withTarget, dialog.target_id, DISCARD_BUTTON);
+    if (!clicked) {
+      throw new ClassifiedError(
+        CATEGORIES.TV_UI_CHANGED,
+        `The unsaved-changes dialog is open but its "${DISCARD_BUTTON}" button could not be found, so nothing was closed`,
+        { hint: `Buttons on the dialog: ${(dialog.buttons || []).join(' | ')}. Answer it in the UI.` },
+      );
+    }
+    await wait(1000);
+    after2 = await withShell((evaluateShell) => evaluateShell(`
+      (function() {
+        var tabs = document.querySelectorAll('.tabs-container .tab');
+        var out = { count: tabs.length, labels: [] };
+        for (var i = 0; i < tabs.length; i++) out.labels.push((tabs[i].textContent || '').trim().slice(0, 60));
+        return out;
+      })()
+    `));
+  }
+
+  if (!after2 || after2.count >= snapshot.count) {
     throw new ClassifiedError(
       CATEGORIES.API_UNEXPECTED,
-      `The close was clicked but the tab count did not drop (${snapshot.count} -> ${after ? after.count : 'unreadable'})`,
-      { hint: 'Call tab_list to see the true current state.' },
+      `The close was clicked but the tab count did not drop (${snapshot.count} -> ${after2 ? after2.count : 'unreadable'})`,
+      { hint: 'Call tab_list to see the true current state. If the layout has unsaved changes, tab_close reports that separately.' },
     );
   }
 
@@ -393,7 +508,7 @@ export async function closeTab({ expect_title, _deps } = {}) {
     return m;
   };
   const beforeTally = tally(snapshot.labels);
-  const afterTally = tally(after.labels);
+  const afterTally = tally(after2.labels);
   const departed = [];
   for (const [label, n] of beforeTally) {
     const left = n - (afterTally.get(label) || 0);
@@ -422,8 +537,8 @@ export async function closeTab({ expect_title, _deps } = {}) {
     // What left according to the labels, not according to the count.
     closed_observed: departed.length === 1 ? departed[0] : departed,
     tabs_before: snapshot.count,
-    tabs_after: after.count,
-    remaining: after.labels,
+    tabs_after: after2.count,
+    remaining: after2.labels,
     verified: victimWent === true,
     ...(victimWent === null ? {
       verify_note: 'The victim had no readable label, so which tab closed could only be inferred from '

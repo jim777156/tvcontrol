@@ -986,31 +986,112 @@ export async function newScript({ type, confirm_overwrite } = {}) {
   };
 }
 
-export async function openScript({ name }) {
-  const editorReady = await ensurePineEditorOpen();
-  if (!editorReady) throw new ClassifiedError(CATEGORIES.PINE_EDITOR_CLOSED, 'Could not open Pine Editor.');
+// THE PANEL TITLE IS THE BINDING.
+//
+// Read it from the DOM and say which selector answered, so a build that moves
+// it degrades to "unknown" rather than to a confident wrong answer. Every
+// candidate is tried; the first non-empty string wins.
+const READ_PINE_PANEL_TITLE = `
+  (function readPineTitle() {
+    var candidates = [
+      '[data-name="scriptTitle"]',
+      '[data-name="pine-script-title"]',
+      '.js-script-title',
+      '[class*="pineEditor"] [class*="scriptTitle"]',
+      '[class*="pine-editor"] [class*="title"]',
+      '[data-name="pine-editor-header"] [class*="title"]'
+    ];
+    for (var i = 0; i < candidates.length; i++) {
+      var el = document.querySelector(candidates[i]);
+      if (!el) continue;
+      var t = (el.textContent || '').trim();
+      if (t) return { title: t, selector: candidates[i] };
+    }
+    return { title: null, selector: null };
+  })()
+`;
 
-  const escapedName = JSON.stringify(name.toLowerCase());
+/**
+ * Normalise for comparison only. TradingView shows a modified script with a
+ * trailing marker and pads the header, and neither means the binding moved.
+ */
+function _sameScript(a, b) {
+  const clean = (v) => String(v || '').toLowerCase().replace(/\s+/g, ' ').replace(/[*•]\s*$/, '').trim();
+  const x = clean(a);
+  const y = clean(b);
+  if (!x || !y) return false;
+  return x === y || x.startsWith(y) || y.startsWith(x);
+}
 
-  const result = await evaluateAsync(`
+/**
+ * Fetch a saved script's source over the pine-facade REST API WITHOUT touching
+ * the editor buffer.
+ *
+ * Requested in issue #10: reading a saved script is the common case - compare
+ * it against a local file, audit what is deployed - and routing that through
+ * the editor is what puts a script at risk. openScript already fetched over
+ * this endpoint before injecting, so this is the same read with the dangerous
+ * half removed.
+ */
+export async function getScriptSource({ name, _deps } = {}) {
+  const evaluateAsyncImpl = _deps?.evaluateAsync || evaluateAsync;
+  const result = await evaluateAsyncImpl(_findScriptScript(name, /* withSource */ true));
+  if (result?.error) throw new ClassifiedError(CATEGORIES.API_UNEXPECTED, result.error, result.hint ? { hint: result.hint } : undefined);
+  return {
+    success: true,
+    name: result.name,
+    title: result.title || null,
+    script_id: result.id,
+    version: result.version,
+    lines: result.lines,
+    source_code: result.source_code,
+    editor_touched: false,
+    source: 'internal_api',
+  };
+}
+
+/**
+ * The page-side lookup, shared by getScriptSource and openScript.
+ *
+ * AMBIGUITY IS REPORTED, NOT RESOLVED. Issue #10 measured 20 of 53 scripts on
+ * one account whose list name and in-code title disagree, and one in-code title
+ * shared by FOUR saved scripts. The old substring fallback took the first hit
+ * and said nothing, so "open the script called X" could land on something else
+ * entirely. An exact match on name or title still wins outright; a substring
+ * that hits more than one candidate now returns the candidates and refuses.
+ */
+export function _findScriptScript(name, withSource) {
+  const escapedName = JSON.stringify(String(name).toLowerCase());
+  return `
     (function() {
       var target = ${escapedName};
       return fetch('https://pine-facade.tradingview.com/pine-facade/list/?filter=saved', { credentials: 'include' })
         .then(function(r) { return r.json(); })
         .then(function(scripts) {
           if (!Array.isArray(scripts)) return {error: 'pine-facade returned unexpected data'};
-          var match = null;
+          var exact = [];
+          var partial = [];
           for (var i = 0; i < scripts.length; i++) {
             var sn = (scripts[i].scriptName || '').toLowerCase();
             var st = (scripts[i].scriptTitle || '').toLowerCase();
-            if (sn === target || st === target) { match = scripts[i]; break; }
+            if (sn === target || st === target) { exact.push(scripts[i]); continue; }
+            if (sn.indexOf(target) !== -1 || st.indexOf(target) !== -1) partial.push(scripts[i]);
           }
-          if (!match) {
-            for (var j = 0; j < scripts.length; j++) {
-              var sn2 = (scripts[j].scriptName || '').toLowerCase();
-              var st2 = (scripts[j].scriptTitle || '').toLowerCase();
-              if (sn2.indexOf(target) !== -1 || st2.indexOf(target) !== -1) { match = scripts[j]; break; }
-            }
+          var match = null;
+          if (exact.length === 1) match = exact[0];
+          else if (exact.length > 1) {
+            return {
+              error: 'ambiguous: ' + exact.length + ' saved scripts match "' + target + '" exactly',
+              candidates: exact.map(function(s) { return { name: s.scriptName, title: s.scriptTitle, script_id: s.scriptIdPart }; }),
+              hint: 'Pass the exact scriptIdPart-bearing name from pine_list_scripts. Names are not unique on this account.'
+            };
+          } else if (partial.length === 1) match = partial[0];
+          else if (partial.length > 1) {
+            return {
+              error: 'ambiguous: "' + target + '" is a substring of ' + partial.length + ' saved scripts',
+              candidates: partial.slice(0, 10).map(function(s) { return { name: s.scriptName, title: s.scriptTitle, script_id: s.scriptIdPart }; }),
+              hint: 'Use pine_list_scripts with name_filter and pass a full name.'
+            };
           }
           if (!match) return {error: 'Script "' + target + '" not found. Use pine_list_scripts to see available scripts.'};
 
@@ -1021,23 +1102,118 @@ export async function openScript({ name }) {
             .then(function(data) {
               var source = data.source || '';
               if (!source) return {error: 'Script source is empty', name: match.scriptName || match.scriptTitle};
+              var out = {
+                found: true,
+                name: match.scriptName || match.scriptTitle,
+                title: match.scriptTitle || null,
+                id: id,
+                version: ver,
+                lines: source.split(String.fromCharCode(10)).length
+              };
+              ${withSource ? 'out.source_code = source;' : ''}
+              ${withSource ? '' : `
+              var before = ${READ_PINE_PANEL_TITLE};
               var m = ${FIND_MONACO};
-              if (m) {
-                m.editor.setValue(source);
-                return {success: true, name: match.scriptName || match.scriptTitle, id: id, lines: source.split('\\n').length};
-              }
-              return {error: 'Monaco editor not found to inject source', name: match.scriptName || match.scriptTitle};
+              if (!m) return {error: 'Monaco editor not found to inject source', name: out.name};
+              m.editor.setValue(source);
+              var after = ${READ_PINE_PANEL_TITLE};
+              out.title_before = before.title;
+              out.title_after = after.title;
+              out.title_selector = after.selector || before.selector;
+              `}
+              return out;
             });
         })
         .catch(function(e) { return {error: e.message}; });
     })()
-  `);
+  `;
+}
+
+/**
+ * SETVALUE IS NOT AN OPEN.
+ *
+ * Issue #11, measured on a live account: this fetched the target's source and
+ * pasted it into whatever buffer was already there, leaving the editor bound to
+ * the PREVIOUS script - and then returned {success: true, name: <target>},
+ * which any caller reads as "the editor is now on that script". A following
+ * pine_save wrote the opened script's code over the previously open one. Four
+ * saved scripts on that account ended up sharing one in-code title because the
+ * same source had been saved over each of them.
+ *
+ * The obvious check does not catch it: comparing the buffer against a known
+ * copy of the target passes, because the text really is the target's. It proves
+ * the FETCH, not the BINDING.
+ *
+ * So read the panel title back, and fail closed on the case that corrupts:
+ *   title read and it matches   -> opened: true, as claimed
+ *   title read and it disagrees -> THROW. This is the corruption case. A save
+ *                                  here overwrites a different script.
+ *   title unreadable            -> return, but binding_verified: false and a
+ *                                  warning. A selector that moves in a future
+ *                                  build must degrade to "unknown", never to a
+ *                                  confident wrong answer.
+ *
+ * Issue #10: the buffer is also guarded now, the same way pine_new and
+ * pine_set_source guard it. Opening a script is how an agent reads one, so it
+ * is reached for early and often, and it was destroying unsaved work silently.
+ */
+export async function openScript({ name, confirm_overwrite, _deps } = {}) {
+  const evaluateAsyncImpl = _deps?.evaluateAsync || evaluateAsync;
+  const ensureOpenImpl = _deps?.ensurePineEditorOpen || ensurePineEditorOpen;
+  const assertSafeImpl = _deps?.assertBufferSafeToReplace || _assertBufferSafeToReplace;
+
+  const editorReady = await ensureOpenImpl();
+  if (!editorReady) throw new ClassifiedError(CATEGORIES.PINE_EDITOR_CLOSED, 'Could not open Pine Editor.');
+
+  // BEFORE the fetch, not after: refusing after the buffer is gone is not a guard.
+  await assertSafeImpl(confirm_overwrite, 'pine_open');
+
+  const result = await evaluateAsyncImpl(_findScriptScript(name, false));
 
   if (result?.error) {
-    throw new ClassifiedError(CATEGORIES.API_UNEXPECTED, result.error);
+    throw new ClassifiedError(
+      CATEGORIES.API_UNEXPECTED,
+      result.error,
+      {
+        ...(result.hint ? { hint: result.hint } : {}),
+        ...(result.candidates ? { candidates: result.candidates } : {}),
+      },
+    );
   }
 
-  return { success: true, name: result.name, script_id: result.id, lines: result.lines, source: 'internal_api', opened: true };
+  const boundTo = result.title_after ?? null;
+  const loaded = result.name;
+
+  if (boundTo && !_sameScript(boundTo, loaded) && !_sameScript(boundTo, result.title)) {
+    throw new ClassifiedError(
+      CATEGORIES.API_UNEXPECTED,
+      `The source for "${loaded}" was loaded into the editor, but the editor is still bound to "${boundTo}". ` +
+        'A pine_save now would write this code over that script, not over the one you asked for.',
+      {
+        hint: 'Switch to the script in the Pine editor yourself, then retry. To READ a saved script without touching the editor, use pine_get_script_source.',
+        editor_bound_to: boundTo,
+        source_loaded_from: loaded,
+      },
+    );
+  }
+
+  return {
+    success: true,
+    name: loaded,
+    script_id: result.id,
+    lines: result.lines,
+    source: 'internal_api',
+    // `opened` is the claim that matters, so it is never asserted without proof.
+    opened: Boolean(boundTo),
+    binding_verified: Boolean(boundTo),
+    editor_bound_to: boundTo,
+    ...(boundTo ? {} : {
+      warning:
+        'The editor buffer now holds this script\'s source, but the panel title could not be read, ' +
+        'so it is NOT confirmed that the editor is bound to it. A pine_save may write to a different script.',
+      hint: 'Confirm the script name in the Pine editor before saving. To read a saved script with no buffer risk, use pine_get_script_source.',
+    }),
+  };
 }
 
 export async function listScripts({ name_filter, limit = 50, offset = 0, _deps } = {}) {

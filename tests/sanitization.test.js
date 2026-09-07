@@ -255,8 +255,36 @@ describe('drawing.js — sanitized evaluate calls', () => {
     );
   });
 
+
+/**
+ * drawShape now verifies the shape it created by reading it back (issue #8),
+ * so a mock where nothing ever appears makes it throw - correctly. These three
+ * tests are about SANITIZATION, so give them a chart where the drawing really
+ * lands, and let tests/draw_shape_verify.test.js own the verification.
+ */
+function drawingDeps() {
+  const shapes = [];
+  const { _deps, evaluate } = mockDeps();
+  const inner = _deps.evaluate;
+  const wrapped = async (js) => {
+    inner(js);
+    if (js.includes('getAllShapes')) {
+      return js.includes('s.name')
+        ? shapes.map((sh) => ({ ...sh }))
+        : shapes.map((sh) => sh.id);
+    }
+    if (js.includes('createShape') || js.includes('createMultipointShape')) {
+      shapes.push({ id: `shape${shapes.length}`, name: /shape: "([^"]*)"/.exec(js)?.[1] || null });
+      return null;
+    }
+    return undefined;
+  };
+  wrapped.calls = evaluate.calls;
+  return { _deps: { ..._deps, evaluate: wrapped }, evaluate: wrapped };
+}
+
   it('drawShape uses safeString for shape name', async () => {
-    const { _deps, evaluate } = mockDeps();
+    const { _deps, evaluate } = drawingDeps();
     await drawShape({ shape: 'horizontal_line', point: { time: 100, price: 50 }, _deps });
     const call = evaluate.calls.find(c => c.includes('createShape'));
     assert.ok(call, 'createShape called');
@@ -264,7 +292,7 @@ describe('drawing.js — sanitized evaluate calls', () => {
   });
 
   it('drawShape uses validated coordinates in evaluate', async () => {
-    const { _deps, evaluate } = mockDeps();
+    const { _deps, evaluate } = drawingDeps();
     await drawShape({ shape: 'horizontal_line', point: { time: 1700000000, price: 5000.50 }, _deps });
     const call = evaluate.calls.find(c => c.includes('createShape'));
     assert.ok(call.includes('1700000000'), 'time in call');
@@ -272,7 +300,7 @@ describe('drawing.js — sanitized evaluate calls', () => {
   });
 
   it('drawShape multipoint uses safeString and requireFinite', async () => {
-    const { _deps, evaluate } = mockDeps();
+    const { _deps, evaluate } = drawingDeps();
     await drawShape({
       shape: 'trend_line',
       point: { time: 100, price: 50 },

@@ -17,6 +17,8 @@ register('alert', {
         message: { type: 'string', short: 'm', description: 'Alert message' },
         'no-mobile-push': { type: 'boolean', description: 'Disable mobile push notification' },
         'expiration-days': { type: 'string', description: 'Expiration in days (1-365; default 30)' },
+        frequency: { type: 'string', description: 'once_per_bar, once_per_bar_close, or only_once. on-bar-close alerts were MCP-only.' },
+        resolution: { type: 'string', description: 'Alert resolution/timeframe (default 1)' },
       },
       handler: (opts) => core.create({
         price: Number(opts.price),
@@ -24,6 +26,8 @@ register('alert', {
         message: opts.message,
         mobile_push: !opts['no-mobile-push'],
         expiration_days: opts['expiration-days'] ? Number(opts['expiration-days']) : undefined,
+        frequency: opts.frequency,
+        resolution: opts.resolution,
       }),
     }],
     ['delete', {

@@ -17,9 +17,12 @@ register('layout', {
     ['switch', {
       description: 'Switch to a saved layout by name or ID',
       usage: '<layout_name>',
+      options: {
+        discard_unsaved: { type: 'boolean', description: 'Proceed when unsaved changes block the switch, LOSING them. The refusal hint names this flag.' },
+      },
       handler: (opts, positionals) => {
         _arg(positionals[0], 'Layout name required. Usage: tv layout switch "My Layout"');
-        return core.layoutSwitch({ name: positionals.join(' ') });
+        return core.layoutSwitch({ name: positionals.join(' '), discard_unsaved: opts.discard_unsaved });
       },
     }],
   ]),

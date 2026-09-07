@@ -21,6 +21,7 @@ register('pine', {
       description: 'Set Pine Script source (reads stdin or --file)',
       options: {
         file: { type: 'string', short: 'f', description: 'Read source from file' },
+        confirm_overwrite: { type: 'boolean', description: 'Required to replace a buffer holding real work. The refusal hint names this flag.' },
       },
       handler: async (opts) => {
         let source;
@@ -30,7 +31,7 @@ register('pine', {
           source = await readStdin();
         }
         _arg(source, 'No source provided. Pipe source via stdin or use --file.');
-        return core.setSource({ source });
+        return core.setSource({ source, confirm_overwrite: opts.confirm_overwrite });
       },
     }],
     ['compile', {
@@ -80,17 +81,31 @@ register('pine', {
     ['new', {
       description: 'Create a new blank Pine Script (indicator, strategy, library)',
       usage: '[indicator|strategy|library]',
+      options: {
+        confirm_overwrite: { type: 'boolean', description: 'Required to replace a buffer holding real work. The refusal hint names this flag.' },
+      },
       handler: (opts, positionals) => {
         const type = positionals[0] || 'indicator';
-        return core.newScript({ type });
+        return core.newScript({ type, confirm_overwrite: opts.confirm_overwrite });
       },
     }],
     ['open', {
-      description: 'Open a saved Pine Script by name',
+      description: 'Load a saved Pine Script into the editor buffer. Check binding_verified before saving; use "tv pine source" to read one safely.',
       usage: '<script_name>',
+      options: {
+        confirm_overwrite: { type: 'boolean', description: 'Required to replace a buffer holding real work' },
+      },
       handler: (opts, positionals) => {
         _arg(positionals[0], 'Script name required. Usage: tv pine open "My Script"');
-        return core.openScript({ name: positionals.join(' ') });
+        return core.openScript({ name: positionals.join(' '), confirm_overwrite: opts.confirm_overwrite });
+      },
+    }],
+    ['source', {
+      description: 'Read a saved Pine Script WITHOUT touching the editor buffer',
+      usage: '<script_name>',
+      handler: (opts, positionals) => {
+        _arg(positionals[0], 'Script name required. Usage: tv pine source "My Script"');
+        return core.getScriptSource({ name: positionals.join(' ') });
       },
     }],
     ['list', {

@@ -83,9 +83,15 @@ describe('start() — date selection and polling', () => {
       return undefined;
     };
     evaluate.calls = [];
-    const result = await start({ date: '2026-01-01', _deps: { evaluate, getReplayApi: mockGetReplayApi() } });
+    // The requested date and the mocked cursor must agree: 1700000000 is
+    // 2023-11-14, and asking for 2026-01-01 here made the fixture describe a
+    // 779-day relocation, which replay_start now refuses (issue #7). This test
+    // is about the POLL, so keep the fixture internally consistent and let
+    // tests/replay_relocation.test.js own the relocation behaviour.
+    const result = await start({ date: '2023-11-14', _deps: { evaluate, getReplayApi: mockGetReplayApi() } });
     assert.equal(result.success, true);
     assert.equal(result.current_date, 1700000000);
+    assert.equal(result.relocated, false);
     assert.ok(pollCount >= 4, 'polled multiple times');
   });
 

@@ -184,6 +184,27 @@ describe('MCP tool registration — integration', () => {
       `Found ${offenders.length} raw throw new Error sites in src/core/ — convert to ClassifiedError:\n${offenders.join('\n')}`);
   });
 
+  it('the repository root holds no stray scratch files', async () => {
+    // MEASURED 2026-09-08: a throwaway CDP probe, `vis-probe.mjs`, was written
+    // to the repo root to diagnose the screenshot regression. The command that
+    // was supposed to delete it was killed mid-run, and the next `git add -A`
+    // swept it into the v2.5.3 release commit. The npm `files` whitelist kept it
+    // out of the published package, so no user got it, but it is in the public
+    // repo and in a release tag.
+    //
+    // The root is the one directory where a scratch file is invisible: it is not
+    // under src/ or tests/ where anyone would look, and it is not caught by the
+    // packaging whitelist that would otherwise have flagged it.
+    const { readdirSync } = await import('node:fs');
+    const root = new URL('../', import.meta.url);
+    const ALLOWED = new Set(['eslint.config.mjs']);
+    const stray = readdirSync(root)
+      .filter((f) => /\.(mjs|cjs)$/.test(f) && !ALLOWED.has(f));
+    assert.deepEqual(stray, [],
+      `Stray script(s) in the repo root: ${stray.join(', ')}. `
+      + 'Scratch files belong in the scratchpad directory, not next to package.json.');
+  });
+
   it('every tool name is unique (no collisions)', () => {
     const server = mockServer();
     registerHealthTools(server);

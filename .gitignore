@@ -24,3 +24,10 @@ scripts/*.pine
 # npm pack output
 *.tgz
 WHERE-THINGS-ARE.md
+
+# Scratch probes. A killed cleanup step once let one of these reach a release
+# commit via `git add -A`; tests/integration.test.js also fails on them.
+/*-probe.mjs
+/probe.mjs
+/vis*.mjs
+/front.mjs

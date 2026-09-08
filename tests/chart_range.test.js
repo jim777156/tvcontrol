@@ -178,8 +178,8 @@ test('setVisibleRange rejects malformed partial and invalid visual inputs', asyn
   );
 });
 
-test('the read-only child surface remains exactly 58 tools with no new viewport tool', () => {
-  assert.equal(READONLY_TOOLS.length, 58);
+test('the read-only child surface remains exactly 59 tools with no new viewport tool', () => {
+  assert.equal(READONLY_TOOLS.length, 59);
   assert.deepEqual(
     READONLY_TOOLS.filter((name) => name.includes('visible_range')).sort(),
     ['chart_get_visible_range', 'chart_set_visible_range'],

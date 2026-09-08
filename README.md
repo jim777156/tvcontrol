@@ -10,29 +10,23 @@
 
 TVControl turns your TradingView Desktop into something you can talk to. You type a sentence (*"summarise this chart"*, *"sweep this strategy across SPY, QQQ and IWM on 5m and 15m"*, *"step through last March bar by bar and call out the breakout"*) and the AI reads, clicks, types, compiles and screenshots inside the actual TradingView app on your machine. No copy-paste and no TVControl-operated cloud backend. TradingView Desktop and explicitly selected public-API helpers still communicate with TradingView as documented.
 
-It works because every Chromium app, TradingView Desktop included, ships with a built-in debugging interface (the same one Chrome uses to debug itself). TVControl speaks that interface on your behalf, exposing **113 chart-control and diagnostic tools** to any AI agent that supports the Model Context Protocol (Claude Code, Codex, Gemini CLI, Cursor, and others). Pair-program in Pine Script. Optimize parameter grids. Snapshot and restore whole chart setups. Drive 4-pane layouts. Step through replay. Scan a watchlist. All by speech-to-action.
+It works because every Chromium app, TradingView Desktop included, ships with a built-in debugging interface (the same one Chrome uses to debug itself). TVControl speaks that interface on your behalf, exposing **113 chart-control and diagnostic tools** to any agent that speaks the Model Context Protocol. It is client-neutral: anything that can launch an MCP server over stdio works, and it is in daily use across several. Pair-program in Pine Script. Optimize parameter grids. Snapshot and restore whole chart setups. Drive 4-pane layouts. Step through replay. Scan a watchlist. All by speech-to-action.
 
-**113 MCP tools · 736 deterministic offline tests · 10 verify scripts · 8 prompt-library workflows · no TVControl cloud backend.** Everything in this repo is real, tested, and used daily.
+**113 MCP tools · 921 deterministic offline tests · 10 verify scripts · 9 prompt-library workflows · no TVControl cloud backend.** Everything in this repo is real, tested, and used daily.
 
-## What is new in 2.3.0
+## What is new in 2.5
 
-Version 2.3.0 is about doing a thing once across everything you watch, instead of once per symbol.
+The 2.5 line is about one thing: **a tool must build its answer from an independent read, never from the request or from the response of the thing it just did.** Every fix below is a place where that was not true.
 
-- **Set alerts on your whole watchlist in one call.** `alert_create_bulk` takes a list of symbols, or no list at all and uses your active watchlist. Point them all at one `webhook_url` and the notifications go to your app instead of 74 separate emails. Price each one relative to its own last trade with `percent_from_last`, so "5% above here" means something different for every symbol and you never type a number. `dry_run: true` prints the whole batch first. Measured on a 29-symbol watchlist: the dry run takes about half a second, and the chart never moves.
-- **Quote a whole list at once.** `quote_batch` returns last, OHLC, change and volume for many symbols in a single server-side call. 29 symbols in 272ms. It names the symbols it could not find rather than quietly returning a shorter list.
-- **A destructive Pine bug is fixed.** `pine_new` replaced whatever was in the editor with a template and reported `new_script_created`. It did not create anything, and it is how a real script gets destroyed. It now refuses to overwrite a non-trivial buffer unless you pass `confirm_overwrite: true`, and it fails closed if it cannot read the buffer to check.
-- **Silent success is gone from the mutation tools.** A tool that changes something now builds its answer from an independent read, not from the response of the thing it just did. Deleting an alert id that never existed used to return `success: true, verified: true`. Adding a bare ticker to a watchlist used to store the literal string. `draw_clear` used to return a hardcoded `all_shapes_removed` without looking.
-- **A broken pane is now detectable and repairable.** A chart pane could get
-  stuck in a permanent reconnect loop, and rebuilding the layout by hand looked
-  like the only fix. It was a race in TVControl: TradingView returns Promises
-  from `createStudy` and friends, and reading the result after a fixed sleep
-  instead of awaiting them could leave a study with no server id, which
-  destroys that pane's data session on every reconnect from then on. The
-  promises are awaited now, an unregistered study is never left behind, and
-  `tv_chart_health` and `tv_repair_chart` find and fix a pane that is already
-  in that state without touching your layout.
-- **The offline suite is actually offline.** It was opening a live CDP connection and calling `removeAllShapes()` against the real chart on every run. It is hermetic now, and a guard makes the next escape a red test rather than a lost drawing.
-- **The server no longer misdescribes itself.** Version and tool counts are derived at startup and checked on the wire, after shipping a build that announced itself as 2.2.1 with 102 tools while registering 103.
+- **A result you can act on when a call times out.** `chart_set_symbol` and `chart_set_timeframe` had already applied the change by the time their readiness wait expired, then threw as though nothing had happened, so a caller that retried applied it twice. They now return `chart_ready: false` and say not to retry. `indicator_add_from_search` polls for the study instead of sleeping 1500ms and guessing. The contract is now stated in the tool descriptions: **a thrown error means nothing changed.**
+- **`pine_open` no longer risks the wrong script.** It fetched a script's source and pasted it into whatever buffer was open, leaving the editor bound to the *previous* script while reporting success. A following save wrote over the wrong file. It now reads the editor's own title back and refuses on a mismatch. New in this release: **`pine_get_script_source`** reads a saved script over the REST API without touching the editor at all, which is what you want for comparing a saved script against a local file.
+- **Screenshots are refused rather than stale.** A hidden tab returns the last frame Chromium painted for it: a real PNG of the right chart showing the wrong data, with the clock still ticking in the corner. `capture_screenshot` now requires a visible tab, and `region: "chart"` captures the *active* pane instead of whichever pane happened to be first in the DOM.
+- **`replay_start` will not quietly move your date.** A date outside a symbol's replay depth was relocated silently, so every read afterwards was correct for a date nobody asked for. It now refuses, stops replay, and tells you where the cursor would have landed.
+- **`tab_close` explains the dialog that is blocking it.** TradingView's unsaved-changes prompt is its own debug target, invisible to every selector the chart page can run, so the old failure read like a bug in tab handling. It is now found and named, and `discard_unsaved: true` answers it. "Save and close" is never clicked for you.
+- **`draw_shape` refuses a shape name it does not recognise** instead of silently drawing a flag and echoing back the name you asked for.
+- **The CLI can reach every safety guard the MCP tools expose.** Three of them were refusals whose own hint named a flag the CLI did not have.
+- **The server starts even when it cannot read its own files.** Under restrictive install directories (Windows `Program Files` with Controlled Folder Access), a startup scan of its own tool directory threw before the server existed, and every client saw a bare `Connection closed`. Both startup reads now fail soft onto a catalog generated at publish time, and say so on stderr.
+- **A contract for embedding TVControl in a desktop app** ships in the package: [`docs/EMBEDDING.md`](./docs/EMBEDDING.md). Read it before bundling this inside a host application.
 
 See the [changelog](./CHANGELOG.md) and [upgrade guide](./docs/UPGRADING.md).
 
@@ -41,7 +35,7 @@ See the [changelog](./CHANGELOG.md) and [upgrade guide](./docs/UPGRADING.md).
 
 ## What it actually does (with prompts that work)
 
-Paste any of these into Claude Code (or your MCP-compatible agent of choice) once TVControl is wired up.
+Paste any of these into your MCP client once TVControl is wired up. Nothing here is specific to one agent.
 
 **Read your chart in one prompt.**
 > *Use `chart_vision_read` to summarise my chart: symbol, timeframe, last price, visible indicators with their current values, custom Pine levels and labels, and the last 100-bar move.*
@@ -74,7 +68,7 @@ Captures symbol, timeframe, all studies and their inputs, drawings, and the full
 
 One call. `alert_create_bulk` reads your active watchlist, prices each alert off that symbol's own last trade, and verifies the whole batch with a single read of the alert list afterwards. Everything lands on your webhook, so the filtering, grouping and deduping happen in your code rather than in your inbox.
 
-The full prompt library (every workflow above plus chart analysis, watchlist and alerts, screening, and agent prompting tips) lives in [`examples/prompts/`](./examples/prompts/). Eight files. Copy-pasteable.
+The full prompt library (every workflow above plus chart analysis, watchlist and alerts, screening, and agent prompting tips) lives in [`examples/prompts/`](./examples/prompts/). Nine files. Copy-pasteable.
 
 ---
 
@@ -82,7 +76,9 @@ The full prompt library (every workflow above plus chart analysis, watchlist and
 
 This isn't a demo. It ships with a test battery.
 
-- **732 offline tests**: Pine analyzer, sanitization, replay, pane and indicator boundaries, watchlist, alerts, state snapshots, sweep planning, vision wrapper, telemetry, capability gating, privacy-safe bundles, chaos cleanup, soak bounds, golden workflows, native watchdog services, update safety, tool registration, and CLI routing. Live Pine-service checks are isolated in `tests/pine_api.test.js`.
+- **921 offline tests**: Pine analyzer, sanitization, replay, pane and indicator boundaries, watchlist, alerts, state snapshots, sweep planning, vision wrapper, telemetry, capability gating, privacy-safe bundles, chaos cleanup, soak bounds, golden workflows, native watchdog services, startup resilience, embedding contract, CLI/MCP guard parity, update safety, tool registration, and CLI routing. Live Pine-service checks are isolated in `tests/pine_api.test.js`.
+- **Mutation-tested, not just green.** A test that cannot fail is worse than no test, because it turns an unknown into false confidence. Fixes in this project are checked by reintroducing the bug and confirming the suite goes red. Where behaviour lives in page-side JavaScript, the tests execute that generated code against a stub DOM rather than describing it in a mock.
+- **The suite has a floor.** A run that reports fewer tests than expected fails, so tests cannot silently disappear from a green run.
 - **10 end-to-end verify scripts** under [`examples/verify/`](./examples/verify/) that drive the same MCP tools through the `tv` CLI against a live TradingView. Run `examples/verify/run-all.sh` and it auto-skips when TV isn't up.
 - **GitHub Actions CI** runs lint, offline tests, dependency audit, and package checks on Node 18 and 22 across Linux, macOS, and Windows.
 - **CDP smoke** (`scripts/smoke.sh`): live connection sanity check against your local TradingView.
@@ -108,13 +104,13 @@ tv --help
 
 The package installs both `tv` and `tvcontrol`. For MCP-server configuration, use the installed `src/server.js` or one of the repository paths below.
 
-### Path A. Claude Code, one prompt to install
+### Path A. Let your agent install it
 
-Paste this into Claude Code once and let it do the rest.
+Paste this into any coding agent that can edit files and run commands, and let it do the rest.
 
-> Install the TVControl MCP server. Clone https://github.com/ferroxlabs/tvcontrol.git into ~/tvcontrol, run `npm install`, add it to my Claude Code MCP config at `~/.claude/.mcp.json` as a server named `tvcontrol` pointing at `~/tvcontrol/src/server.js`, then run `tv_launch` to start TradingView in debug mode and `tv_health_check` to confirm the connection.
+> Install the TVControl MCP server. Clone https://github.com/ferroxlabs/tvcontrol.git into ~/tvcontrol, run `npm install`, register it in my MCP client config as a server named `tvcontrol` running `node ~/tvcontrol/src/server.js`, then call `tv_launch` to start TradingView in debug mode and `tv_health_check` to confirm the connection.
 
-Claude Code will clone, install, register the server, and verify. Restart Claude Code when it finishes so the new MCP server loads.
+It will clone, install, register the server, and verify. Restart your client when it finishes so the new MCP server loads.
 
 ### Path B. Manual, any MCP client
 
@@ -135,7 +131,7 @@ scripts\launch_tv_debug.bat             # Windows
 
 On Windows Store/MSIX installations, `tv_launch` also detects the package with `Get-AppxPackage`. If Windows blocks CDP from the protected `WindowsApps` directory, it launches a versioned local copy under `%LOCALAPPDATA%\tvcontrol\desktop-cache` and reports `msix_local_copy: true`.
 
-Then add this to your MCP client config (`~/.claude/.mcp.json` for Claude Code, equivalent location for Codex / Gemini CLI / Cursor), replacing the path with your absolute path.
+Then add this to your MCP client's config file, replacing the path with your own absolute path. Every MCP client uses the same shape; only the file location differs, and your client's documentation names it.
 
 ```json
 {
@@ -148,7 +144,9 @@ Then add this to your MCP client config (`~/.claude/.mcp.json` for Claude Code, 
 }
 ```
 
-Restart your client. A copy-pasteable example config lives at [`examples/mcp-config.example.json`](./examples/mcp-config.example.json).
+Restart your client. A copy-pasteable example config lives at [`examples/mcp-config.example.json`](./examples/mcp-config.example.json), including a variant with an absolute path to `node` for the case where your client launches servers without your shell's `PATH`.
+
+**Bundling TVControl inside a desktop application?** Read [`docs/EMBEDDING.md`](./docs/EMBEDDING.md) first. It is the spawn contract, and it exists because the two ways an embed fails both happen before the server can emit a single message, so neither can report itself.
 
 Verify with:
 > *Use `tv_health_check`, then `chart_vision_read` to summarise my chart.*
@@ -199,7 +197,7 @@ Each prompt file lists the tools that fire, what to expect, and the common gotch
 tv status / launch / state / symbol / timeframe / type / info / search
 tv quote / ohlcv / values
 tv data lines / labels / tables / boxes / strategy / trades / equity / depth / indicator
-tv pine get / set / compile / analyze / check / save / new / open / list / errors / console
+tv pine get / set / source / compile / analyze / check / save / new / open / list / errors / console
 tv draw shape / list / get / remove / clear
 tv alert list / create / delete
 tv watchlist get / add / remove / export / import
@@ -266,7 +264,7 @@ AI Agent  <->  MCP Server (stdio)  <->  CDP (localhost:9222)  <->  TradingView D
 - **Streaming:** poll-and-diff loop with deduplication, JSONL on stdout.
 - **Runtime deps:** `@modelcontextprotocol/sdk`, `chrome-remote-interface`. That's it.
 
-The full per-tool decision tree (*which tool to call for which question*) lives in [`CLAUDE.md`](./CLAUDE.md). Read that once if you want to understand how the agent picks tools.
+The full per-tool decision tree (*which tool to call for which question*) lives in [`CLAUDE.md`](./CLAUDE.md). The filename is a convention some clients load automatically; the content is plain Markdown and is worth reading whichever agent you use, or pasting into its own instructions file.
 
 ---
 
@@ -276,7 +274,7 @@ The full per-tool decision tree (*which tool to call for which question*) lives 
 - TVControl's chart-control path speaks CDP to the Electron app already running on your machine. TradingView Desktop and explicitly documented public helpers still communicate with TradingView.
 - TVControl does not operate a cloud backend. Local snapshots, telemetry, reliability receipts, and support bundles are written only when their corresponding features are used.
 - No real trades are executed. Chart, drawings, indicators, and Pine code only.
-- **`TV_MCP_READONLY=1` registers only the tools that cannot change your TradingView state.** For unattended use — a scheduled morning brief, a cron job, a CI agent — where nobody is there to approve a call. An MCP grant is server-level, so a host that can reach TVControl can reach every tool it registers; under this flag the mutating ones are never registered, so calling one is an unknown-tool error rather than a promise the model is asked to keep. Reads, diagnostics, screenshots and chart navigation (symbol, timeframe, range, pane/tab/layout switching) stay available; watchlist edits, alert create/delete, drawing writes, indicator changes, Pine saves, replay, `state_restore` and `tv_launch` do not. `ui_evaluate` stays off even if `TV_MCP_ADVANCED=1` is also set.
+- **`TV_MCP_READONLY=1` registers only the tools that cannot change your TradingView state.** For unattended use (a scheduled morning brief, a cron job, a CI agent) where nobody is there to approve a call. An MCP grant is server-level, so a host that can reach TVControl can reach every tool it registers; under this flag the mutating ones are never registered, so calling one is an unknown-tool error rather than a promise the model is asked to keep. Reads, diagnostics, screenshots and chart navigation (symbol, timeframe, range, pane/tab/layout switching) stay available; watchlist edits, alert create/delete, drawing writes, indicator changes, Pine saves, replay, `state_restore` and `tv_launch` do not. `ui_evaluate` stays off even if `TV_MCP_ADVANCED=1` is also set.
 
 The same CDP interface is built into every Chromium app: VS Code, Slack, Discord, Chrome itself. It's not a side door; it's the standard debugging interface Google ships with the runtime.
 
@@ -286,7 +284,7 @@ The same CDP interface is built into every Chromium app: VS Code, Slack, Discord
 
 - TVControl talks to undocumented internal TradingView APIs through the Electron debug interface. Those can change in any TradingView update without notice. Pin your TradingView Desktop version if stability matters to you.
 - Tested on macOS, Windows, and Linux at release time.
-- Requires Node.js 18+.
+- Requires Node.js 18.14.1 or newer.
 
 ---
 

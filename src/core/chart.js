@@ -38,7 +38,11 @@ function _resolve(deps) {
     isReplayActive: deps?.isReplayActive || (async () => {
       try {
         const rp = await getReplayApi();
-        return await evaluate(`(function(){ try { return !!(${rp}.isReplayStarted()); } catch (e) { return false; } })()`) === true;
+        return await evaluate(`(function(){ try {
+          var state = ${rp}.isReplayStarted();
+          if (state && typeof state === 'object' && typeof state.value === 'function') state = state.value();
+          return !!state;
+        } catch (e) { return false; } })()`) === true;
       } catch (_) {
         return false;
       }

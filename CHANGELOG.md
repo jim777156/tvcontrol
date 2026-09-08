@@ -2,6 +2,16 @@
 
 All notable changes to TVControl are documented here. This project follows [Semantic Versioning](https://semver.org/).
 
+## [2.5.1] - 2026-09-08
+
+### Fixed
+
+- Read the boolean inside TradingView's watched replay state before guarding a
+  timeframe change. An inactive replay wrapper previously evaluated as truthy,
+  preventing normal chart collection and falsely reporting replay as active.
+  Real active replay remains blocked. Regression tests execute the page-side
+  check for both plain booleans and watched values.
+
 ## [2.5.0] - 2026-09-08
 
 Every open issue from the external bug reports (#3 to #11), closed. Eight of the nine are

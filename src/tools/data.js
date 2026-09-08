@@ -3,11 +3,14 @@ import { jsonResult, errorResult } from './_format.js';
 import * as core from '../core/data.js';
 
 export function registerDataTools(server) {
-  server.tool('data_get_ohlcv', 'Get OHLCV bar data from the chart. Use summary=true for compact stats instead of all bars (saves context).', {
+  server.tool('data_get_ohlcv', 'Get OHLCV bar data from the chart. Use summary=true for compact stats instead of all bars (saves context). Historical mode: pass event_timestamp with bars_before and bars_after to get an exact bar window around a specific point in time without moving the visible chart range.', {
     count: z.coerce.number().int().min(1).max(500).optional().describe('Number of bars to retrieve (1-500, default 100)'),
     summary: z.coerce.boolean().optional().describe('Return summary stats (high, low, open, close, avg volume, range) instead of all bars — much smaller output'),
-  }, async ({ count, summary }) => {
-    try { return jsonResult(await core.getOhlcv({ count, summary })); }
+    event_timestamp: z.coerce.number().int().optional().describe('Historical mode: Unix seconds timestamp of the event bar. Requires bars_before and bars_after. Cannot be combined with count/summary.'),
+    bars_before: z.coerce.number().int().min(0).optional().describe('Historical mode: exact number of bars required before the containing event bar.'),
+    bars_after: z.coerce.number().int().min(0).optional().describe('Historical mode: exact number of bars required after the containing event bar.'),
+  }, async ({ count, summary, event_timestamp, bars_before, bars_after }) => {
+    try { return jsonResult(await core.getOhlcv({ count, summary, event_timestamp, bars_before, bars_after })); }
     catch (err) { return errorResult(err); }
   });
 

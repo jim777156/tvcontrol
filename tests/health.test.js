@@ -19,6 +19,100 @@ function depsFor(state) {
   };
 }
 
+function liveProbeDeps({
+  chartApiInstance,
+  sessionConnected = true,
+  sessionId = 'cs_test',
+  sessionState = 2,
+  browserOnline = true,
+  reconnectText = '',
+  seriesStatus = 3,
+  seriesStatusError = false,
+} = {}) {
+  const series = {
+    bars: () => ({}),
+    status: () => seriesStatus,
+    isStatusError: () => seriesStatusError,
+  };
+
+  const inner = {
+    dataSources: () => [],
+  };
+
+  const model = {
+    model: () => inner,
+    mainSeries: () => series,
+  };
+
+  const chartSession = {
+    _sessionId: sessionId,
+    _state: sessionState,
+  };
+
+  if (sessionConnected !== null) {
+    chartSession._isConnected = {
+      value: () => sessionConnected,
+    };
+  }
+
+  const widget = {
+    _chartSession: chartSession,
+    model: () => model,
+  };
+
+  const chart = {
+    _chartWidget: widget,
+    symbol: () => 'NASDAQ:NVDA',
+    resolution: () => '1D',
+    chartType: () => 1,
+    getAllStudies: () => [],
+  };
+
+  const window = {
+    location: {
+      href: 'https://www.tradingview.com/chart/test/?symbol=SECRET',
+    },
+    TradingViewApi: {
+      _activeChartWidgetWV: {
+        value: () => chart,
+      },
+    },
+  };
+
+  if (chartApiInstance !== undefined) {
+    window.ChartApiInstance = chartApiInstance;
+  }
+
+  const document = {
+    title: 'TradingView',
+    querySelectorAll: () => [],
+    body: {
+      innerText: reconnectText,
+    },
+  };
+
+  const navigator = {
+    onLine: browserOnline,
+    userAgent: 'TVDesktop/3.4.0.8149',
+  };
+
+  return {
+    getClient: async () => ({}),
+    getTargetInfo: async () => ({
+      url: 'https://www.tradingview.com/chart/test/?symbol=SECRET',
+      title: 'TradingView',
+    }),
+    evaluate: async (expression) => (
+      new Function(
+        'window',
+        'document',
+        'navigator',
+        `return (${expression});`,
+      )(window, document, navigator)
+    ),
+  };
+}
+
 test('healthCheck reports feed and compatibility health without leaking target query parameters', async () => {
   const result = await healthCheck({
     _deps: depsFor({
@@ -34,6 +128,118 @@ test('healthCheck reports feed and compatibility health without leaking target q
   assert.equal(result.status, 'healthy');
   assert.equal(result.target_url, 'https://www.tradingview.com/chart/');
   assert.equal(result.datafeed.state, 'connected');
+});
+
+test('health probe uses the legacy ChartApiInstance signal when it is available', async () => {
+  const result = await healthCheck({
+    _deps: liveProbeDeps({
+      chartApiInstance: {
+        connected: () => true,
+      },
+      sessionConnected: false,
+    }),
+  });
+
+  assert.equal(result.healthy, true);
+  assert.equal(result.datafeed.state, 'connected');
+  assert.equal(result.datafeed.connected, true);
+  assert.equal(result.datafeed.connection_source, 'chart_api_instance');
+});
+
+test('health probe falls back to the active chart session on Desktop 3.4', async () => {
+  const result = await healthCheck({
+    _deps: liveProbeDeps({
+      sessionConnected: true,
+      sessionId: 'cs_live',
+      sessionState: 2,
+    }),
+  });
+
+  assert.equal(result.healthy, true);
+  assert.equal(result.status, 'healthy');
+  assert.equal(result.datafeed.state, 'connected');
+  assert.equal(result.datafeed.connected, true);
+  assert.equal(result.datafeed.connection_source, 'active_chart_session');
+});
+
+test('active chart session fallback reports an explicit disconnect', async () => {
+  const result = await healthCheck({
+    _deps: liveProbeDeps({
+      sessionConnected: false,
+      sessionId: 'cs_live',
+      sessionState: 2,
+    }),
+  });
+
+  assert.equal(result.healthy, false);
+  assert.equal(result.datafeed.state, 'disconnected');
+  assert.equal(result.datafeed.connected, false);
+  assert.equal(result.datafeed.connection_source, 'active_chart_session');
+});
+
+test('health probe remains unknown when neither global nor session evidence is explicit', async () => {
+  const result = await healthCheck({
+    _deps: liveProbeDeps({
+      sessionConnected: null,
+    }),
+  });
+
+  assert.equal(result.healthy, false);
+  assert.equal(result.datafeed.state, 'unknown');
+  assert.equal(result.datafeed.connected, null);
+  assert.equal(result.datafeed.connection_source, null);
+});
+
+test('explicit global disconnect is never overridden by a connected pane fallback', async () => {
+  const result = await healthCheck({
+    _deps: liveProbeDeps({
+      chartApiInstance: {
+        connected: () => false,
+      },
+      sessionConnected: true,
+    }),
+  });
+
+  assert.equal(result.healthy, false);
+  assert.equal(result.datafeed.state, 'disconnected');
+  assert.equal(result.datafeed.connected, false);
+  assert.equal(result.datafeed.connection_source, 'chart_api_instance');
+});
+
+test('reconnect evidence overrides a connected active chart session', async () => {
+  const result = await healthCheck({
+    _deps: liveProbeDeps({
+      sessionConnected: true,
+      reconnectText: 'Reconnecting...',
+    }),
+  });
+
+  assert.equal(result.healthy, false);
+  assert.equal(result.datafeed.state, 'reconnecting');
+});
+
+test('series errors override a connected active chart session', async () => {
+  const result = await healthCheck({
+    _deps: liveProbeDeps({
+      sessionConnected: true,
+      seriesStatusError: true,
+    }),
+  });
+
+  assert.equal(result.healthy, false);
+  assert.equal(result.datafeed.state, 'series_error');
+});
+
+test('browser offline state overrides a connected active chart session', async () => {
+  const result = await healthCheck({
+    _deps: liveProbeDeps({
+      sessionConnected: true,
+      browserOnline: false,
+    }),
+  });
+
+  assert.equal(result.healthy, false);
+  assert.equal(result.datafeed.state, 'offline');
 });
 
 test('healthCheck is degraded and actionable while TradingView is reconnecting', async () => {

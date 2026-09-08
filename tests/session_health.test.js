@@ -28,7 +28,17 @@ import { ClassifiedError, CATEGORIES } from '../src/errors.js';
  * Fake chart collection. `id: null` on a study means "never registered",
  * which is what the real page reports as an empty Array.
  */
-function mockCharts(panes) {
+function mockCharts(
+  panes,
+  {
+    socket = {
+      connected: true,
+      connection_source: 'chart_api_instance',
+      disconnect_count: 0,
+      connections_limit_reached: false,
+    },
+  } = {},
+) {
   const state = panes.map((p) => ({
     sessionId: p.sessionId === undefined ? 'cs_ok' : p.sessionId,
     state: p.state === undefined ? 2 : p.state,
@@ -44,7 +54,7 @@ function mockCharts(panes) {
   const evaluate = async (expr) => {
     if (expr.includes('out.panes.push(p)') || expr.includes('var out = { panes: [], socket: {} }')) {
       return {
-        socket: { connected: true, disconnect_count: 0, connections_limit_reached: false },
+        socket,
         panes: state.map((p, i) => ({
           index: i,
           session_id: p.sessionId,
@@ -141,6 +151,76 @@ describe('tv_chart_health finds the pane that cannot fix itself', () => {
     assert.deepEqual(r.problems, []);
     assert.equal(r.advice, undefined);
     assert.equal(r.panes[0].poisoned_studies.length, 0);
+  });
+
+  it('derives connected socket state from all connected panes when the global feed is unavailable', async () => {
+    const page = mockCharts(HEALTHY, {
+      socket: {
+        connected: null,
+        connection_source: null,
+        disconnect_count: null,
+        connections_limit_reached: null,
+      },
+    });
+
+    const r = await inspect({ _deps: page._deps });
+
+    assert.equal(r.socket.connected, true);
+    assert.equal(r.socket.connection_source, 'pane_sessions');
+  });
+
+  it('derives disconnected socket state when any pane session is explicitly dead', async () => {
+    const page = mockCharts([...HEALTHY, ...POISONED], {
+      socket: {
+        connected: null,
+        connection_source: null,
+        disconnect_count: null,
+        connections_limit_reached: null,
+      },
+    });
+
+    const r = await inspect({ _deps: page._deps });
+
+    assert.equal(r.socket.connected, false);
+    assert.equal(r.socket.connection_source, 'pane_sessions');
+  });
+
+  it('keeps socket state unknown when pane sessions provide no explicit connection evidence', async () => {
+    const page = mockCharts(
+      [{
+        connected: null,
+        studies: [{ name: 'Volume', id: 'T4x6LH' }],
+      }],
+      {
+        socket: {
+          connected: null,
+          connection_source: null,
+          disconnect_count: null,
+          connections_limit_reached: null,
+        },
+      },
+    );
+
+    const r = await inspect({ _deps: page._deps });
+
+    assert.equal(r.socket.connected, null);
+    assert.equal(r.socket.connection_source, null);
+  });
+
+  it('never overrides an explicit global disconnect with connected pane sessions', async () => {
+    const page = mockCharts(HEALTHY, {
+      socket: {
+        connected: false,
+        connection_source: 'chart_api_instance',
+        disconnect_count: 0,
+        connections_limit_reached: false,
+      },
+    });
+
+    const r = await inspect({ _deps: page._deps });
+
+    assert.equal(r.socket.connected, false);
+    assert.equal(r.socket.connection_source, 'chart_api_instance');
   });
 
   it('names the study that kills the session, and says that is what it does', async () => {

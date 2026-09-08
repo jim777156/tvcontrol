@@ -60,13 +60,79 @@ const HEALTH_PROBE_JS = `
 
     var feedConnected = null;
     var disconnectCount = null;
+    var connectionSource = null;
+
+    // Legacy/global TradingView connection surface. Keep this first so older
+    // Desktop builds retain their existing behaviour.
     try {
       var feed = window.ChartApiInstance;
-      if (feed && typeof feed.connected === 'function') feedConnected = !!feed.connected();
-      else if (feed && typeof feed._isConnected === 'boolean') feedConnected = feed._isConnected;
-      if (feed && typeof feed.disconnectCount === 'function') disconnectCount = feed.disconnectCount();
-      else if (feed && typeof feed._disconnectCount === 'number') disconnectCount = feed._disconnectCount;
+
+      if (feed && typeof feed.connected === 'function') {
+        feedConnected = !!feed.connected();
+      } else if (feed && typeof feed._isConnected === 'boolean') {
+        feedConnected = feed._isConnected;
+      } else if (feed && feed._isConnected && typeof feed._isConnected.value === 'function') {
+        var globalConnectedValue = feed._isConnected.value();
+        if (typeof globalConnectedValue === 'boolean') {
+          feedConnected = globalConnectedValue;
+        }
+      }
+
+      if (feed && typeof feed.disconnectCount === 'function') {
+        disconnectCount = feed.disconnectCount();
+      } else if (feed && typeof feed._disconnectCount === 'number') {
+        disconnectCount = feed._disconnectCount;
+      } else if (feed && feed._disconnectCount && typeof feed._disconnectCount.value === 'function') {
+        var globalDisconnectCount = feed._disconnectCount.value();
+        if (typeof globalDisconnectCount === 'number') {
+          disconnectCount = globalDisconnectCount;
+        }
+      }
+
+      if (typeof feedConnected === 'boolean') {
+        connectionSource = 'chart_api_instance';
+      }
     } catch(e) {}
+
+    // TradingView Desktop 3.4.0.8149 no longer exposes window.ChartApiInstance.
+    // Fall back only when the legacy/global probe produced no explicit boolean.
+    // The active chart session already carries the connection signal used by
+    // tv_chart_health. Do not infer connectivity merely from object existence,
+    // CDP reachability, or cached bars.
+    if (feedConnected === null) {
+      try {
+        var chartSession = widget && widget._chartSession;
+        var sessionConnected = null;
+
+        if (chartSession && typeof chartSession._isConnected === 'boolean') {
+          sessionConnected = chartSession._isConnected;
+        } else if (
+          chartSession
+          && chartSession._isConnected
+          && typeof chartSession._isConnected.value === 'function'
+        ) {
+          var sessionConnectedValue = chartSession._isConnected.value();
+          if (typeof sessionConnectedValue === 'boolean') {
+            sessionConnected = sessionConnectedValue;
+          }
+        }
+
+        var sessionId = chartSession ? String(chartSession._sessionId || '') : '';
+        var sessionState = chartSession ? chartSession._state : null;
+
+        if (sessionConnected === false) {
+          feedConnected = false;
+          connectionSource = 'active_chart_session';
+        } else if (
+          sessionConnected === true
+          && sessionId.length > 0
+          && sessionState !== 0
+        ) {
+          feedConnected = true;
+          connectionSource = 'active_chart_session';
+        }
+      } catch(e) {}
+    }
 
     var seriesStatus = null;
     var seriesStatusError = null;
@@ -107,6 +173,7 @@ const HEALTH_PROBE_JS = `
     result.datafeed = {
       state: feedState,
       connected: feedConnected,
+      connection_source: connectionSource,
       browser_online: result.browserOnline,
       reconnect_indicator: reconnectIndicator,
       disconnect_count: disconnectCount,

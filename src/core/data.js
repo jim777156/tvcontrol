@@ -12,6 +12,46 @@ const _DATA_DEPS = new Set(['evaluate', 'evaluateAsync', 'openPanel', 'wait', 'w
 
 const MAX_OHLCV_BARS = 500;
 const MAX_TRADES = 20;
+
+// Governed chart resolutions for historical OHLCV windows, mapped to their
+// nominal bar duration in seconds. Matches the TPP timeframe allow-list
+// (Patch 9A). An ungoverned/unrecognized resolution fails closed rather than
+// guessing a bar duration.
+const RESOLUTION_SECONDS = Object.freeze({
+  '5': 300,
+  '15': 900,
+  '60': 3600,
+  '120': 7200,
+  '240': 14400,
+  D: 86400,
+  '1D': 86400,
+});
+
+// Historical OHLCV window loading uses its own narrow dependency surface
+// (evaluate + wait) rather than the shared _DATA_DEPS resolver. This keeps
+// the unchanged legacy getOhlcv({count, summary}) path free of any _deps
+// handling at all, so existing callers that already pass unrelated _deps
+// bags (e.g. batch.js's full deps object) can never trip strict-key
+// validation on a code path they were never touching in the first place.
+const _HISTORICAL_DEPS = new Set(['evaluate', 'wait']);
+function _resolveHistorical(deps) {
+  strictResolve(deps, _HISTORICAL_DEPS);
+  return {
+    evaluate,
+    wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    ...deps,
+  };
+}
+
+function _isValidOhlcGeometry(bar) {
+  const { open, high, low, close, volume } = bar;
+  if (![open, high, low, close, volume].every(Number.isFinite)) return false;
+  if (volume < 0) return false;
+  if (low > high) return false;
+  if (open < low || open > high) return false;
+  if (close < low || close > high) return false;
+  return true;
+}
 const roundPrice = (value) => (value == null ? null : Math.round(value * 1e8) / 1e8);
 // Cap the equity-curve payload. A 1m-over-a-year backtest produces hundreds of
 // thousands of points; serializing that across CDP (returnByValue) can breach
@@ -176,11 +216,37 @@ function buildGraphicsJS(collectionName, mapKey, filter) {
   `;
 }
 
-export async function getOhlcv({ count, summary } = {}) {
+export async function getOhlcv({ count, summary, event_timestamp, bars_before, bars_after, _deps } = {}) {
+  const historicalFieldsGiven = event_timestamp !== undefined || bars_before !== undefined || bars_after !== undefined;
+  const legacyFieldsGiven = count !== undefined || summary !== undefined;
+
+  if (historicalFieldsGiven) {
+    if (legacyFieldsGiven) {
+      throw new ClassifiedError(
+        CATEGORIES.INVALID_ARGUMENT,
+        'Cannot mix legacy OHLCV arguments (count, summary) with historical arguments (event_timestamp, bars_before, bars_after).',
+      );
+    }
+    if (event_timestamp === undefined || bars_before === undefined || bars_after === undefined) {
+      throw new ClassifiedError(
+        CATEGORIES.INVALID_ARGUMENT,
+        'Historical OHLCV mode requires event_timestamp, bars_before, and bars_after together.',
+      );
+    }
+    return getHistoricalOhlcvWindow({ event_timestamp, bars_before, bars_after, _deps });
+  }
+
+  // ---- legacy path: UNCHANGED behaviour. No strict _deps validation is ever
+  // applied here (no _resolve/_DATA_DEPS involvement), so a caller's existing
+  // _deps bag (e.g. batch.js's full deps object) can never be rejected. The
+  // plain `|| evaluate` fallback below means every real caller today (none of
+  // which pass _deps.evaluate) behaves exactly as before; it only exists so
+  // this path is deterministically testable without a live TradingView.
+  const legacyEvaluate = _deps?.evaluate || evaluate;
   const limit = Math.min(count || 100, MAX_OHLCV_BARS);
   let data;
   try {
-    data = await evaluate(`
+    data = await legacyEvaluate(`
       (function() {
         var bars = ${BARS_PATH};
         if (!bars || typeof bars.lastIndex !== 'function') return null;
@@ -225,6 +291,190 @@ export async function getOhlcv({ count, summary } = {}) {
   }
 
   return { success: true, count: data.bars.length, total_available: data.total_bars, source: data.source, bars: data.bars };
+}
+
+// HISTORICAL OHLCV WINDOW (Patch 9B).
+//
+// Finds the exact bar containing `event_timestamp` and returns exactly
+// `bars_before` bars before it, the event bar itself, and `bars_after` bars
+// after it — without ever moving the visible chart range. Reuses the
+// history-loading mechanism proven in chart.js's setVisibleRange
+// (requestMoreDataAvailable / requestMoreData(1000) / 1800ms poll / 25
+// attempt cap) but deliberately omits its final zoomToBarsRange step.
+//
+// Containing-bar rule: bar_start <= event_timestamp < effective_end, where
+// effective_end is min(bar_start + bar_seconds, next_bar_start) when a next
+// bar is loaded. Bounding by the next bar's actual start (rather than a pure
+// arithmetic bar_start + bar_seconds) is what makes a weekend/session gap
+// fail to match the previous bar: the gap sits between two real, loaded
+// bars, and no amount of additional history-loading (which only extends the
+// buffer backward) can ever fill it.
+async function getHistoricalOhlcvWindow({ event_timestamp, bars_before, bars_after, _deps }) {
+  const deps = _resolveHistorical(_deps);
+
+  if (!Number.isFinite(event_timestamp)) {
+    throw new ClassifiedError(CATEGORIES.INVALID_ARGUMENT, 'event_timestamp must be a finite Unix-seconds number.');
+  }
+  if (!Number.isInteger(bars_before) || bars_before < 0) {
+    throw new ClassifiedError(CATEGORIES.INVALID_ARGUMENT, 'bars_before must be a non-negative integer.');
+  }
+  if (!Number.isInteger(bars_after) || bars_after < 0) {
+    throw new ClassifiedError(CATEGORIES.INVALID_ARGUMENT, 'bars_after must be a non-negative integer.');
+  }
+  const totalRequested = bars_before + 1 + bars_after;
+  if (totalRequested > MAX_OHLCV_BARS) {
+    throw new ClassifiedError(
+      CATEGORIES.INVALID_ARGUMENT,
+      `bars_before + 1 + bars_after (${totalRequested}) exceeds the maximum historical window of ${MAX_OHLCV_BARS} bars.`,
+    );
+  }
+
+  const resolution = await deps.evaluate(`${CHART_API}.resolution()`);
+  const barSeconds = RESOLUTION_SECONDS[String(resolution)];
+  if (!barSeconds) {
+    throw new ClassifiedError(
+      CATEGORIES.INVALID_ARGUMENT,
+      `Unsupported chart resolution for historical OHLCV: ${resolution}. Governed resolutions: 5, 15, 60, 120, 240, D.`,
+    );
+  }
+
+  const history = { requests: 0, earliest_loaded: null, exhausted: false };
+  let probe = null;
+
+  for (let attempt = 0; attempt < 25; attempt++) {
+    probe = await deps.evaluate(`
+      (function() {
+        var series = ${CHART_API}._chartWidget.model().mainSeries();
+        var bars = series.bars();
+        var firstIdx = bars.firstIndex();
+        var lastIdx = bars.lastIndex();
+        var eventTs = ${event_timestamp};
+        var barSeconds = ${barSeconds};
+        var eventIdx = null;
+        for (var i = firstIdx; i <= lastIdx; i++) {
+          var v = bars.valueAt(i);
+          if (!v) continue;
+          var barStart = v[0];
+          var nextV = (i < lastIdx) ? bars.valueAt(i + 1) : null;
+          var nominalEnd = barStart + barSeconds;
+          var effectiveEnd = nextV ? Math.min(nominalEnd, nextV[0]) : nominalEnd;
+          if (barStart <= eventTs && eventTs < effectiveEnd) { eventIdx = i; break; }
+        }
+        var first = bars.valueAt(firstIdx);
+        var more = true;
+        try { more = series.requestMoreDataAvailable(); } catch (e) {}
+        return {
+          eventIdx: eventIdx,
+          firstIdx: firstIdx,
+          lastIdx: lastIdx,
+          firstTime: first && first[0],
+          more: more,
+        };
+      })()
+    `);
+
+    history.earliest_loaded = probe?.firstTime ?? history.earliest_loaded;
+
+    if (probe?.eventIdx !== null && probe?.eventIdx !== undefined) {
+      const countBefore = probe.eventIdx - probe.firstIdx;
+      const haveEnoughBefore = countBefore >= bars_before;
+      if (haveEnoughBefore || !probe.more) break;
+    } else {
+      // Not found. Only keep loading if the event is older than everything
+      // currently loaded AND more history is available. If the event falls
+      // timestamp-wise within the loaded range but no bar matched, that is a
+      // structural gap, not a loading shortfall -- stop immediately.
+      const eventOlderThanLoaded = probe?.firstTime != null && event_timestamp < probe.firstTime;
+      if (!(eventOlderThanLoaded && probe?.more)) break;
+    }
+
+    await deps.evaluate(`
+      (function() {
+        try { ${CHART_API}._chartWidget.model().mainSeries().requestMoreData(1000); return true; }
+        catch (e) { return false; }
+      })()
+    `);
+    history.requests += 1;
+    await deps.wait(1800);
+  }
+
+  history.exhausted = probe?.more === false;
+
+  if (probe?.eventIdx === null || probe?.eventIdx === undefined) {
+    throw new ClassifiedError(
+      CATEGORIES.CHART_LOADING,
+      'No bar contains event_timestamp. It may be newer than the available data, fall in a non-trading gap, or the symbol/resolution history may be exhausted.',
+    );
+  }
+
+  const countBefore = probe.eventIdx - probe.firstIdx;
+  const countAfter = probe.lastIdx - probe.eventIdx;
+  if (countBefore < bars_before) {
+    throw new ClassifiedError(
+      CATEGORIES.CHART_LOADING,
+      `Insufficient bars before the event: needed ${bars_before}, history exhausted with only ${countBefore} available.`,
+    );
+  }
+  if (countAfter < bars_after) {
+    throw new ClassifiedError(
+      CATEGORIES.CHART_LOADING,
+      `Insufficient bars after the event: needed ${bars_after}, only ${countAfter} available. The event may be too recent.`,
+    );
+  }
+
+  const windowStartIdx = probe.eventIdx - bars_before;
+  const windowEndIdx = probe.eventIdx + bars_after;
+  const extracted = await deps.evaluate(`
+    (function() {
+      var series = ${CHART_API}._chartWidget.model().mainSeries();
+      var bars = series.bars();
+      var result = [];
+      for (var i = ${windowStartIdx}; i <= ${windowEndIdx}; i++) {
+        var v = bars.valueAt(i);
+        if (v) result.push({time: v[0], open: v[1], high: v[2], low: v[3], close: v[4], volume: v[5] || 0});
+      }
+      return { bars: result };
+    })()
+  `);
+
+  const bars = extracted?.bars || [];
+  if (bars.length !== totalRequested) {
+    throw new ClassifiedError(
+      CATEGORIES.API_UNEXPECTED,
+      `Historical window extraction returned ${bars.length} bars, expected exactly ${totalRequested}.`,
+    );
+  }
+  for (let i = 1; i < bars.length; i++) {
+    if (!(bars[i].time > bars[i - 1].time)) {
+      throw new ClassifiedError(CATEGORIES.API_UNEXPECTED, 'Historical window bars are not strictly chronological.');
+    }
+  }
+  for (const bar of bars) {
+    if (!_isValidOhlcGeometry(bar)) {
+      throw new ClassifiedError(CATEGORIES.API_UNEXPECTED, `Historical window bar at time ${bar.time} has invalid OHLC geometry.`);
+    }
+  }
+
+  const eventBar = bars[bars_before];
+  return {
+    success: true,
+    mode: 'historical_window',
+    event_timestamp,
+    event_bar_time: eventBar.time,
+    resolution: String(resolution),
+    bar_seconds: barSeconds,
+    bars_before,
+    bars_after,
+    count: bars.length,
+    source: 'direct_bars',
+    history: {
+      requests: history.requests,
+      earliest_loaded: history.earliest_loaded,
+      exhausted: history.exhausted,
+    },
+    viewport_changed: false,
+    bars,
+  };
 }
 
 function _resolve(deps) {

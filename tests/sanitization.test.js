@@ -219,6 +219,22 @@ describe('chart.js — sanitized evaluate calls', () => {
 
   it('setVisibleRange passes valid numbers to evaluate', async () => {
     const { _deps, evaluate } = mockDeps();
+    _deps.evaluate = async (expr) => {
+      evaluate.calls.push(expr);
+      if (expr.includes('getVisibleRange')) {
+        return {
+          visible_range: { from: 1700000000, to: 1700100000 },
+          visual_state: {
+            time_scale: { bar_spacing: 12.5, right_offset: 7.25, width: 940 },
+            main_price_scale: {
+              auto_scale: false,
+              visible_price_range: { from: 0.991, to: 1.004 },
+            },
+          },
+        };
+      }
+      return undefined;
+    };
     await setVisibleRange({ from: 1700000000, to: 1700100000, _deps });
     const call = evaluate.calls.find(c => c.includes('zoomToBarsRange'));
     assert.ok(call, 'zoomToBarsRange called');

@@ -97,14 +97,63 @@ export async function inspect({ _deps } = {}) {
   const { evaluate } = _resolve(_deps);
   const raw = await evaluate(`
     (function() {
-      var out = { panes: [], socket: {} };
+      var out = {
+        panes: [],
+        socket: {
+          connected: null,
+          connection_source: null,
+          disconnect_count: null,
+          connections_limit_reached: null
+        }
+      };
+
       try {
         var api = window.ChartApiInstance;
-        out.socket.connected = !!(api && api._isConnected);
-        out.socket.disconnect_count = api ? api._disconnectCount : null;
-        out.socket.connections_limit_reached = (api && api._connectionsLimitReached && typeof api._connectionsLimitReached.value === 'function')
-          ? api._connectionsLimitReached.value() : null;
-      } catch (e) { out.socket.error = e.message; }
+
+        if (api && typeof api.connected === 'function') {
+          out.socket.connected = !!api.connected();
+        } else if (api && typeof api._isConnected === 'boolean') {
+          out.socket.connected = api._isConnected;
+        } else if (
+          api
+          && api._isConnected
+          && typeof api._isConnected.value === 'function'
+        ) {
+          var globalConnectedValue = api._isConnected.value();
+          if (typeof globalConnectedValue === 'boolean') {
+            out.socket.connected = globalConnectedValue;
+          }
+        }
+
+        if (typeof out.socket.connected === 'boolean') {
+          out.socket.connection_source = 'chart_api_instance';
+        }
+
+        if (api && typeof api.disconnectCount === 'function') {
+          out.socket.disconnect_count = api.disconnectCount();
+        } else if (api && typeof api._disconnectCount === 'number') {
+          out.socket.disconnect_count = api._disconnectCount;
+        } else if (
+          api
+          && api._disconnectCount
+          && typeof api._disconnectCount.value === 'function'
+        ) {
+          var globalDisconnectCount = api._disconnectCount.value();
+          if (typeof globalDisconnectCount === 'number') {
+            out.socket.disconnect_count = globalDisconnectCount;
+          }
+        }
+
+        out.socket.connections_limit_reached = (
+          api
+          && api._connectionsLimitReached
+          && typeof api._connectionsLimitReached.value === 'function'
+        )
+          ? api._connectionsLimitReached.value()
+          : null;
+      } catch (e) {
+        out.socket.error = e.message;
+      }
       var all;
       try { all = ${CWC}.getAll(); } catch (e) { out.error = 'getAll() threw: ' + e.message; return out; }
       for (var i = 0; i < all.length; i++) {
@@ -244,10 +293,47 @@ export async function inspect({ _deps } = {}) {
   const problems = panes.flatMap((p) => p.problems.map((t) => `pane ${p.index}: ${t}`));
   const repairable = panes.some((p) => p.poisoned_studies.length > 0);
 
+  const socket = { ...(raw.socket || {}) };
+
+  // Only derive the effective socket state from pane sessions when the legacy
+  // global probe did not produce an explicit boolean. An explicit global false
+  // is evidence and must never be overwritten by a fallback.
+  if (typeof socket.connected !== 'boolean') {
+    const paneConnectionStates = panes.map((p) => {
+      if (
+        !p.session_id
+        || p.session_state === 0
+        || p.session_connected === false
+      ) {
+        return false;
+      }
+
+      if (p.session_connected === true) {
+        return true;
+      }
+
+      return null;
+    });
+
+    if (
+      paneConnectionStates.length > 0
+      && paneConnectionStates.every((state) => state === true)
+    ) {
+      socket.connected = true;
+      socket.connection_source = 'pane_sessions';
+    } else if (paneConnectionStates.some((state) => state === false)) {
+      socket.connected = false;
+      socket.connection_source = 'pane_sessions';
+    } else {
+      socket.connected = null;
+      socket.connection_source = null;
+    }
+  }
+
   return {
     success: true,
     healthy: problems.length === 0,
-    socket: raw.socket || {},
+    socket,
     panes,
     problems,
     ...(problems.length > 0 ? {

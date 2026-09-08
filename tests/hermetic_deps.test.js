@@ -87,7 +87,27 @@ describe('offline tests must never reach the real browser', () => {
     const dir = join(TMP, 'restore-hermetic');
     writeSnap(dir, 'h', SNAP);
     try {
-      const { _deps } = emptyDeps();
+      // Patch 9C makes chart_set_visible_range return a bounded visual-state
+      // readback. This test is about dependency hermeticity rather than visual
+      // semantics, so model that one page response while leaving every other
+      // injected evaluate call inert.
+      const { _deps } = emptyDeps({
+        evaluate: async (expression) => {
+          if (expression.includes('getVisibleRange') && expression.includes('visual_state')) {
+            return {
+              visible_range: { ...SNAP.visible_range },
+              visual_state: {
+                time_scale: { bar_spacing: 12.5, right_offset: 0, width: 940 },
+                main_price_scale: {
+                  auto_scale: true,
+                  visible_price_range: { from: 90, to: 110 },
+                },
+              },
+            };
+          }
+          return undefined;
+        },
+      });
       const result = await restore({ name: 'h', _deps, _snapshots_dir: dir });
       // The point is not what it restored. The point is that it got here at all:
       // any escape throws "Blocked a real CDP call" from inside the guard.

@@ -42,6 +42,8 @@ export async function chartVisionRead({ include, study_filter, max_image_bytes, 
   let file_path = null;
   let image_base64 = undefined;
   let image_size_bytes = 0;
+  let pane_selected_by = undefined;
+  let pane_count = undefined;
   // 'unavailable' = image was requested but capture failed (caller can branch);
   // 'skipped'    = image was not in `include` so we did not even try;
   // 'file_only'  = captured to disk, too large to inline;
@@ -59,6 +61,8 @@ export async function chartVisionRead({ include, study_filter, max_image_bytes, 
     try {
       const shot = await impls.captureScreenshot({ region: 'chart', method: 'cdp', filename: fname });
       file_path = shot.file_path;
+      pane_selected_by = shot.pane_selected_by;
+      pane_count = shot.pane_count;
     } catch (err) {
       warnings.push({ section: 'image', error: err.message });
       image_mode = 'unavailable';
@@ -88,6 +92,8 @@ export async function chartVisionRead({ include, study_filter, max_image_bytes, 
     image_size_bytes,
     file_path,
     mime_type: 'image/png',
+    ...(pane_selected_by !== undefined ? { pane_selected_by } : {}),
+    ...(pane_count !== undefined ? { pane_count } : {}),
   };
 
   if (image_mode === 'inline') result.image_base64 = image_base64;

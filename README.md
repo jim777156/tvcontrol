@@ -12,7 +12,7 @@ TVControl turns your TradingView Desktop into something you can talk to. You typ
 
 It works because every Chromium app, TradingView Desktop included, ships with a built-in debugging interface (the same one Chrome uses to debug itself). TVControl speaks that interface on your behalf, exposing **113 chart-control and diagnostic tools** to any agent that speaks the Model Context Protocol. It is client-neutral: anything that can launch an MCP server over stdio works, and it is in daily use across several. Pair-program in Pine Script. Optimize parameter grids. Snapshot and restore whole chart setups. Drive 4-pane layouts. Step through replay. Scan a watchlist. All by speech-to-action.
 
-**113 MCP tools · 921 deterministic offline tests · 10 verify scripts · 9 prompt-library workflows · no TVControl cloud backend.** Everything in this repo is real, tested, and used daily.
+**113 MCP tools · 930 deterministic offline tests · 10 verify scripts · 9 prompt-library workflows · no TVControl cloud backend.** Everything in this repo is real, tested, and used daily.
 
 ## What is new in 2.5
 
@@ -76,7 +76,7 @@ The full prompt library (every workflow above plus chart analysis, watchlist and
 
 This isn't a demo. It ships with a test battery.
 
-- **921 offline tests**: Pine analyzer, sanitization, replay, pane and indicator boundaries, watchlist, alerts, state snapshots, sweep planning, vision wrapper, telemetry, capability gating, privacy-safe bundles, chaos cleanup, soak bounds, golden workflows, native watchdog services, startup resilience, embedding contract, CLI/MCP guard parity, update safety, tool registration, and CLI routing. Live Pine-service checks are isolated in `tests/pine_api.test.js`.
+- **930 offline tests**: Pine analyzer, sanitization, replay, pane and indicator boundaries, watchlist, alerts, state snapshots, sweep planning, vision wrapper, telemetry, capability gating, privacy-safe bundles, chaos cleanup, soak bounds, golden workflows, native watchdog services, startup resilience, embedding contract, CLI/MCP guard parity, update safety, tool registration, and CLI routing. Live Pine-service checks are isolated in `tests/pine_api.test.js`.
 - **Mutation-tested, not just green.** A test that cannot fail is worse than no test, because it turns an unknown into false confidence. Fixes in this project are checked by reintroducing the bug and confirming the suite goes red. Where behaviour lives in page-side JavaScript, the tests execute that generated code against a stub DOM rather than describing it in a mock.
 - **The suite has a floor.** A run that reports fewer tests than expected fails, so tests cannot silently disappear from a green run.
 - **10 end-to-end verify scripts** under [`examples/verify/`](./examples/verify/) that drive the same MCP tools through the `tv` CLI against a live TradingView. Run `examples/verify/run-all.sh` and it auto-skips when TV isn't up.

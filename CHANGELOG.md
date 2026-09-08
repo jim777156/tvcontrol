@@ -2,6 +2,33 @@
 
 All notable changes to TVControl are documented here. This project follows [Semantic Versioning](https://semver.org/).
 
+## [2.5.2] - 2026-09-08
+
+### Fixed
+
+- **The replay guard now has three answers, not two.** 2.5.1 correctly unwrapped
+  TradingView's `WatchedValue` so an inactive replay stopped reading as active. What it left
+  was a two-value answer to a three-value question: an object with no recognised accessor was
+  still truthy, so a future rename of `.value()` would refuse every timeframe change again
+  while reporting "replay is running", which is an assertion about a state nobody read.
+
+  `unknown` is now its own answer. It still blocks, because a real replay session slipping
+  through is the worse outcome, but the error says the state could not be determined and names
+  the shape it saw. `.get()` and a plain `value` property are recognised too, and a probe that
+  could not run at all (no chart, no CDP) is treated as "no replay session to protect" rather
+  than as an unreadable one.
+
+- **Windows CI was red for six runs because of a test, not the product.**
+  `tests/cli_mcp_parity.test.js` dynamically imported the CLI command modules by absolute path.
+  On Windows that throws `ERR_UNSUPPORTED_ESM_URL_SCHEME`, so its `before()` hook died and all
+  14 tests came back `cancelledByParent` on both Windows runners while passing everywhere else.
+  It uses `pathToFileURL` now.
+
+- **Two vulnerable transitive dependencies.** `fast-uri` (high) and `qs` (moderate), both
+  reached through `@modelcontextprotocol/sdk`, failed the CI dependency audit. Lockfile bumped
+  to `fast-uri@3.1.7` and `qs@6.16.0`; the SDK version is unchanged. `npm audit` reports zero
+  vulnerabilities.
+
 ## [2.5.1] - 2026-09-08
 
 ### Fixed

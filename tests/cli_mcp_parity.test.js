@@ -19,7 +19,7 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { _registeredCommands } from '../src/cli/router.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -51,7 +51,12 @@ before(async () => {
   // real `tv` binary populates it.
   const dir = join(__dirname, '..', 'src', 'cli', 'commands');
   for (const file of readdirSync(dir).filter((f) => f.endsWith('.js')).sort()) {
-    await import(join(dir, file));
+    // pathToFileURL, not the bare path. On Windows a dynamic import of
+    // `C:\\...\\file.js` throws ERR_UNSUPPORTED_ESM_URL_SCHEME, this before()
+    // hook died, and all 14 tests came back `cancelledByParent` on both Windows
+    // runners while passing everywhere else. CI caught it; my local macOS run
+    // never could.
+    await import(pathToFileURL(join(dir, file)).href);
   }
   commands = _registeredCommands();
 

@@ -28,23 +28,58 @@ function _resolve(deps) {
       ? (async () => {})
       : ((ms) => new Promise((resolve) => setTimeout(resolve, ms)))),
     fetch: deps?.fetch || globalThis.fetch,
-    // Reading replay state must never be what breaks a timeframe change: if the
-    // probe itself fails, treat replay as inactive and let the change proceed.
+    // THREE ANSWERS, NOT TWO: 'active', 'inactive', 'unknown'.
+    //
+    // 2.5.0 shipped `!!(rp.isReplayStarted())`. isReplayStarted() returns a
+    // WatchedValue, not a boolean, and an object is always truthy, so the guard
+    // reported replay as active on every normal chart and refused every
+    // timeframe change. 2.5.1 fixed the read by unwrapping `.value()`.
+    //
+    // What 2.5.1 left is a two-value answer for a three-value question. An
+    // object with no recognised accessor still came back truthy, so if
+    // TradingView ever renames `.value()` the tool would refuse every timeframe
+    // change again while telling the user "replay is running" - a statement
+    // that is false, and the same shape of bug one layer up: asserting a state
+    // we did not read.
+    //
+    // 'unknown' is now its own answer. It still refuses, because a real replay
+    // session slipping through is the worse outcome, but it says what it
+    // actually knows. Absence of evidence is not evidence of absence, and it is
+    // not evidence of presence either.
     //
     // Built from the RESOLVED evaluate/getReplayApi, not the module-level ones.
     // Reaching past injected deps here is the fail-open dependency injection
     // this project has already been bitten by: a "unit" test that quietly opens
     // a real CDP connection.
-    isReplayActive: deps?.isReplayActive || (async () => {
+    replayState: deps?.replayState || (async () => {
       try {
         const rp = await getReplayApi();
-        return await evaluate(`(function(){ try {
+        const seen = await evaluate(`(function(){ try {
           var state = ${rp}.isReplayStarted();
-          if (state && typeof state === 'object' && typeof state.value === 'function') state = state.value();
-          return !!state;
-        } catch (e) { return false; } })()`) === true;
+          if (state && typeof state === 'object') {
+            if (typeof state.value === 'function') return { known: true, active: !!state.value() };
+            if (typeof state.get === 'function') return { known: true, active: !!state.get() };
+            if ('value' in state) return { known: true, active: !!state.value };
+            return { known: false, shape: Object.prototype.toString.call(state) };
+          }
+          if (typeof state === 'boolean') return { known: true, active: state };
+          if (state === null || state === undefined) return { known: true, active: false };
+          return { known: false, shape: typeof state };
+        } catch (e) { return { known: true, active: false }; } })()`);
+        // THE PROBE NOT RUNNING IS NOT THE SAME AS AN ANSWER WE CANNOT READ.
+        //
+        // Nothing back at all means the evaluation itself did not deliver: no
+        // page, no chart, a CDP hiccup. There is no replay session to protect
+        // in that world, so proceed - that is what the comment above promises.
+        // An unrecognised RESPONSE is different: something answered and we
+        // could not interpret it, which is when TradingView has changed under
+        // us and blocking is right.
+        if (!seen || typeof seen !== 'object') return { known: true, active: false };
+        return seen;
       } catch (_) {
-        return false;
+        // The probe itself could not run. That is not the same as an
+        // unrecognised shape: there is no TradingView to have a replay session.
+        return { known: true, active: false };
       }
     }),
   };
@@ -322,18 +357,31 @@ export async function setSymbol({ symbol, _deps }) {
 }
 
 export async function setTimeframe({ timeframe, _deps }) {
-  const { evaluateAsync, waitForChartReady, isReplayActive } = _resolve(_deps);
+  const { evaluateAsync, waitForChartReady, replayState } = _resolve(_deps);
 
   // ISSUE #7, the related half: changing timeframe DURING replay leaves the
   // cursor from the previous timeframe and the new series comes back empty.
   // replay_status then reports is_replay_started: true with a stale
   // current_date, and data_get_ohlcv throws chart_loading indefinitely until
   // replay is stopped. Refusing costs one call; the diagnosis cost a session.
-  if (await isReplayActive()) {
+  const replay = await replayState();
+  if (replay.known && replay.active) {
     throw new ClassifiedError(
       CATEGORIES.INVALID_ARGUMENT,
       `Refusing to change timeframe to ${timeframe} while replay is running: the cursor stays on the old timeframe, the new series comes back empty, and data reads then hang on chart_loading until replay is stopped.`,
       { hint: 'Call replay_stop first, change the timeframe, then replay_start again at the date you want.' },
+    );
+  }
+  if (!replay.known) {
+    // Say what is true: we could not read the state. Claiming replay is running
+    // would be an assertion about something we did not observe.
+    throw new ClassifiedError(
+      CATEGORIES.TV_UI_CHANGED,
+      `Could not determine whether replay is running (isReplayStarted() returned an unrecognised ${replay.shape}), so the timeframe change to ${timeframe} was refused rather than risk corrupting a replay session. Replay may or may not be active.`,
+      {
+        hint: 'Check replay_status. If replay is off, this is a TradingView API change in TVControl: please open an issue at https://github.com/FerroxLabs/tvcontrol/issues with your Desktop version.',
+        probe_shape: replay.shape,
+      },
     );
   }
 

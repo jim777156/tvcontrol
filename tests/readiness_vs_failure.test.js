@@ -54,7 +54,7 @@ describe('setSymbol separates "not applied" from "applied, not settled"', () => 
 });
 
 describe('setTimeframe does the same, and refuses to run during replay (#5, #7)', () => {
-  const ok = { evaluateAsync: async () => ({ ok: true }), isReplayActive: async () => false };
+  const ok = { evaluateAsync: async () => ({ ok: true }), replayState: async () => ({ known: true, active: false }) };
 
   it('succeeds with chart_ready:false rather than throwing', async () => {
     const out = await setTimeframe({ timeframe: '5', _deps: { ...ok, waitForChartReady: async () => false } });
@@ -71,7 +71,7 @@ describe('setTimeframe does the same, and refuses to run during replay (#5, #7)'
       () => setTimeframe({
         timeframe: '15',
         _deps: {
-          isReplayActive: async () => true,
+          replayState: async () => ({ known: true, active: true }),
           evaluateAsync: async () => { applied = true; return { ok: true }; },
           waitForChartReady: async () => true,
         },
@@ -86,7 +86,7 @@ describe('setTimeframe does the same, and refuses to run during replay (#5, #7)'
     // unusable. The probe defaults to false on error.
     const out = await setTimeframe({
       timeframe: '5',
-      _deps: { ...ok, isReplayActive: async () => false, waitForChartReady: async () => true },
+      _deps: { ...ok, waitForChartReady: async () => true },
     });
     assert.equal(out.success, true);
   });

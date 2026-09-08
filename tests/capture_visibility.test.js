@@ -18,13 +18,22 @@ import { captureScreenshot } from '../src/core/capture.js';
 
 const PNG = Buffer.from('fake-png').toString('base64');
 
-function deps({ visibility = 'visible', bounds = null, onCapture } = {}) {
+function deps({ visibility = 'visible', bounds = null, onCapture, visibleAfterFront = false, frontThrows = null } = {}) {
   const captured = [];
+  const fronts = [];
+  let current = visibility;
   return {
     captured,
+    fronts,
     _deps: {
+      wait: async () => {},
+      bringToFront: async () => {
+        fronts.push(Date.now());
+        if (frontThrows) throw new Error(frontThrows);
+        if (visibleAfterFront) current = 'visible';
+      },
       evaluate: async (js) => {
-        if (js === 'document.visibilityState') return visibility;
+        if (js === 'document.visibilityState') return current;
         if (js.includes('chart-container')) return bounds;
         return null;
       },
@@ -43,26 +52,67 @@ function deps({ visibility = 'visible', bounds = null, onCapture } = {}) {
   };
 }
 
-describe('a hidden tab is refused, not captured (#3)', () => {
-  it('refuses when visibilityState is hidden, and never calls captureScreenshot', async () => {
-    const d = deps({ visibility: 'hidden' });
+describe('a hidden target is FRONTED, and only then refused (#3)', () => {
+  it('brings the window to the front rather than refusing, and captures a live frame', async () => {
+    // THE REGRESSION THIS EXISTS TO STOP.
+    //
+    // Measured on the operator's own machine, 2026-09-08, TradingView open and
+    // working, merely sitting behind the terminal:
+    //   {"vis":"hidden","hidden":true,"title":"Live stock, index, futures ..."}
+    // macOS Chromium marks a fully occluded window hidden. 2.5.0 refused on
+    // exactly that, so the ordinary workflow (look at the agent, not the chart)
+    // broke nine screenshot-using skills.
+    const d = deps({ visibility: 'hidden', visibleAfterFront: true });
+    const out = await captureScreenshot({ _deps: d._deps });
+    assert.equal(out.success, true);
+    assert.equal(out.visibility, 'visible');
+    assert.equal(out.brought_to_front, true);
+    assert.equal(d.fronts.length, 1, 'it must actually raise the window, not just re-read');
+    assert.equal(d.captured.length, 1);
+  });
+
+  it('does not touch the window when it is already visible', async () => {
+    const d = deps({ visibility: 'visible' });
+    const out = await captureScreenshot({ _deps: d._deps });
+    assert.deepEqual(d.fronts, [], 'raising the window is a side effect on the desktop; do not do it needlessly');
+    assert.equal(out.brought_to_front, undefined);
+  });
+
+  it('refuses only when fronting fails to make it visible', async () => {
+    // Minimised, or on another Space. At that point a capture really is stale.
+    const d = deps({ visibility: 'hidden', visibleAfterFront: false });
     await assert.rejects(
       () => captureScreenshot({ _deps: d._deps }),
-      /Target tab is hidden.*last frame it painted/s,
+      /still hidden after bringing it to the front/,
     );
     assert.deepEqual(d.captured, [], 'a refused capture must not reach CDP at all');
+    assert.equal(d.fronts.length, 1, 'it must have tried');
+  });
+
+  it('reports why fronting failed rather than swallowing it', async () => {
+    const d = deps({ visibility: 'hidden', frontThrows: 'Target closed' });
+    await assert.rejects(
+      () => captureScreenshot({ _deps: d._deps }),
+      (err) => {
+        assert.match(err.message, /still hidden after bringing it to the front/);
+        assert.equal(err.details.bring_to_front_error, 'Target closed');
+        return true;
+      },
+    );
   });
 
   it('refuses when visibility cannot be read at all', async () => {
     // Absence of evidence is not evidence of visibility.
     const d = deps();
     d._deps.evaluate = async () => { throw new Error('CDP disconnected'); };
-    await assert.rejects(() => captureScreenshot({ _deps: d._deps }), /Could not confirm the target tab is visible/);
+    await assert.rejects(() => captureScreenshot({ _deps: d._deps }), /Could not confirm the target is visible/);
   });
 
-  it('refuses on prerender, not only on hidden', async () => {
-    const d = deps({ visibility: 'prerender' });
-    await assert.rejects(() => captureScreenshot({ _deps: d._deps }), /Target tab is prerender/);
+  it('fronts on prerender too, not only on hidden', async () => {
+    const d = deps({ visibility: 'prerender', visibleAfterFront: true });
+    const out = await captureScreenshot({ _deps: d._deps });
+    assert.equal(out.success, true);
+    assert.equal(out.brought_to_front, true);
   });
 
   it('captures when the tab is visible, and records that it checked', async () => {

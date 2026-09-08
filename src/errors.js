@@ -68,6 +68,20 @@ export class ClassifiedError extends Error {
     this.category = category;
     this.hint = options.hint || DEFAULT_HINTS[category];
     if (options.cause !== undefined) this.cause = options.cause;
+
+    // EVERY OTHER OPTION USED TO BE SILENTLY DISCARDED.
+    //
+    // Found 2026-09-08: the 2.5.0 fixes attach diagnostics to their refusals -
+    // shape_requested/shape_created on a rejected drawing, editor_bound_to on a
+    // mis-bound Pine editor, candidates on an ambiguous script name,
+    // requested_date/days_away on a relocated replay cursor, dialog_buttons on a
+    // blocked tab close. The constructor kept `hint` and `cause` and dropped the
+    // rest on the floor, so a caller was told a decision had been made and never
+    // got the facts behind it. Ten fields across six modules, all invisible.
+    //
+    // They travel in `details` now, and toJSON surfaces them.
+    const { hint: _h, cause: _c, ...rest } = options;
+    if (Object.keys(rest).length > 0) this.details = rest;
   }
 
   /**
@@ -79,6 +93,7 @@ export class ClassifiedError extends Error {
       error: this.message,
       category: this.category,
       hint: this.hint,
+      ...(this.details ? { details: this.details } : {}),
     };
   }
 }

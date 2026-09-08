@@ -116,3 +116,44 @@ describe('toErrorPayload()', () => {
     assert.equal(payload.category, 'api_unexpected');
   });
 });
+
+describe('ClassifiedError carries its diagnostics', () => {
+  it('keeps every option that is not hint or cause, under details', () => {
+    // These were dropped on the floor until 2.5.3. A refusal that says "that is
+    // not a shape TradingView recognises" is only actionable if it also says
+    // what WAS created and what happened to it.
+    const err = new ClassifiedError(CATEGORIES.INVALID_ARGUMENT, 'nope', {
+      hint: 'try again',
+      shape_requested: 'not_a_real_shape',
+      shape_created: 'flag',
+      entity_id: '5wpj58',
+      cleanup_removed: true,
+    });
+    assert.equal(err.hint, 'try again');
+    assert.deepEqual(err.details, {
+      shape_requested: 'not_a_real_shape',
+      shape_created: 'flag',
+      entity_id: '5wpj58',
+      cleanup_removed: true,
+    });
+  });
+
+  it('surfaces details on the wire, where a caller can actually read them', () => {
+    const err = new ClassifiedError(CATEGORIES.API_UNEXPECTED, 'mis-bound', { editor_bound_to: 'SuperTrend' });
+    assert.deepEqual(err.toJSON().details, { editor_bound_to: 'SuperTrend' });
+  });
+
+  it('omits details entirely when there are none', () => {
+    // No empty object on every error in the system.
+    const err = new ClassifiedError(CATEGORIES.API_UNEXPECTED, 'plain', { hint: 'h' });
+    assert.equal(err.details, undefined);
+    assert.equal('details' in err.toJSON(), false);
+  });
+
+  it('does not smuggle cause into details', () => {
+    const cause = new Error('underlying');
+    const err = new ClassifiedError(CATEGORIES.API_UNEXPECTED, 'wrapped', { cause, probe_shape: 'object' });
+    assert.equal(err.cause, cause);
+    assert.deepEqual(err.details, { probe_shape: 'object' });
+  });
+});

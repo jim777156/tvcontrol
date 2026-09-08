@@ -2,6 +2,38 @@
 
 All notable changes to TVControl are documented here. This project follows [Semantic Versioning](https://semver.org/).
 
+## [2.5.3] - 2026-09-08
+
+### Fixed
+
+- **`capture_screenshot` refused on a chart that was working perfectly.** 2.5.0 added a
+  visibility check to stop a hidden tab returning the last frame it painted (issue #3). The
+  check was right; refusing was the wrong half of the fix. Measured on a live machine with
+  TradingView open and running, merely sitting *behind* the terminal:
+
+  ```
+  {"vis":"hidden","hidden":true,"title":"Live stock, index, futures, Forex and Bi..."}
+  ```
+
+  macOS Chromium marks a fully occluded window hidden, not just a background tab. So the guard
+  fired on the ordinary workflow, where you are looking at your agent rather than at the chart,
+  and every screenshot-using skill stopped working.
+
+  It now asks for the frame instead of giving up: `Page.bringToFront()` makes the target
+  visible, which is what actually resumes compositing, so the capture is both possible and
+  current. Only if fronting fails to make it visible (minimised, or on another Space) does it
+  refuse, because at that point a capture really would be stale. The result carries
+  `brought_to_front: true` when the window had to be raised, since that is a visible change on
+  your desktop. An already-visible target is never touched.
+
+- **`ClassifiedError` was discarding its own diagnostics.** The constructor kept `hint` and
+  `cause` and dropped every other option on the floor, so ten fields across six modules never
+  reached a caller: `shape_requested` / `shape_created` on a rejected drawing, `editor_bound_to`
+  on a mis-bound Pine editor, `candidates` on an ambiguous script name, `requested_date` and
+  `days_away` on a relocated replay cursor, `dialog_buttons` on a blocked tab close. Every one
+  of those refusals told you a decision had been made and withheld the facts behind it. They
+  travel in `details` now, and `toJSON` surfaces them on the wire.
+
 ## [2.5.2] - 2026-09-08
 
 ### Fixed

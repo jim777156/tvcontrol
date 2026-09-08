@@ -1,7 +1,210 @@
 import { z } from 'zod';
 import { jsonResult, errorResult } from './_format.js';
 import * as core from '../core/chart.js';
+import { evaluate as pageEvaluate } from '../connection.js';
 import { ClassifiedError, CATEGORIES } from '../errors.js';
+
+function _emptyPaneScaleObservation(error) {
+  return {
+    pane_count: null,
+    readable_count: 0,
+    complete: false,
+    panes: [],
+    error,
+  };
+}
+
+function _sanitizePaneScaleObservation(payload) {
+  if (
+    !payload
+    || typeof payload !== 'object'
+    || !Number.isInteger(payload.pane_count)
+    || payload.pane_count < 0
+    || !Array.isArray(payload.panes)
+    || payload.panes.length !== payload.pane_count
+  ) {
+    return _emptyPaneScaleObservation('invalid_pane_scale_observability_payload');
+  }
+
+  const panes = [];
+  let readableCount = 0;
+  for (let expectedIndex = 0; expectedIndex < payload.panes.length; expectedIndex += 1) {
+    const row = payload.panes[expectedIndex];
+    if (
+      !row
+      || typeof row !== 'object'
+      || row.index !== expectedIndex
+      || typeof row.available !== 'boolean'
+    ) {
+      return _emptyPaneScaleObservation('invalid_pane_scale_observability_payload');
+    }
+
+    const sourceName = typeof row.source_name === 'string' && row.source_name.trim()
+      ? row.source_name.trim()
+      : null;
+
+    if (row.available) {
+      const range = row.visible_price_range;
+      if (
+        typeof row.auto_scale !== 'boolean'
+        || !range
+        || typeof range !== 'object'
+        || typeof range.from !== 'number'
+        || !Number.isFinite(range.from)
+        || typeof range.to !== 'number'
+        || !Number.isFinite(range.to)
+        || range.from >= range.to
+      ) {
+        return _emptyPaneScaleObservation('invalid_pane_scale_observability_payload');
+      }
+      panes.push({
+        index: expectedIndex,
+        source_name: sourceName,
+        available: true,
+        auto_scale: row.auto_scale,
+        visible_price_range: { from: range.from, to: range.to },
+      });
+      readableCount += 1;
+      continue;
+    }
+
+    panes.push({
+      index: expectedIndex,
+      source_name: sourceName,
+      available: false,
+      auto_scale: null,
+      visible_price_range: null,
+      error: typeof row.error === 'string' && row.error
+        ? row.error
+        : 'pane_price_scale_unavailable',
+    });
+  }
+
+  return {
+    pane_count: payload.pane_count,
+    readable_count: readableCount,
+    complete: readableCount === payload.pane_count,
+    panes,
+  };
+}
+
+/**
+ * Observe every internal TradingView pane's main-source price scale.
+ *
+ * This is deliberately read-only. C1-B1 exists to determine whether indicator
+ * panes such as MACD/RSI are already in auto-scale mode during historical
+ * reconstruction or are carrying a manual/stale range. Failure to observe one
+ * pane must not break the commissioned visible-range read, so unreadable panes
+ * are reported explicitly rather than turning chart_get_visible_range into a
+ * new failure mode.
+ */
+export async function readPanePriceScales({ evaluatePage = pageEvaluate } = {}) {
+  try {
+    const raw = await evaluatePage(`
+      (function() {
+        var chart = window.TradingViewApi._activeChartWidgetWV.value();
+        var panes = typeof chart.getPanes === 'function' ? chart.getPanes() : null;
+        if (!Array.isArray(panes)) {
+          return { pane_count: null, panes: [], error: 'pane_api_unavailable' };
+        }
+
+        var rows = [];
+        for (var i = 0; i < panes.length; i++) {
+          var pane = panes[i];
+          var sourceName = null;
+          try {
+            var source = pane && typeof pane.getMainSource === 'function'
+              ? pane.getMainSource()
+              : null;
+            if (source) {
+              try {
+                var meta = typeof source.metaInfo === 'function' ? source.metaInfo() : null;
+                if (meta) {
+                  sourceName = String(meta.shortDescription || meta.description || meta.id || '') || null;
+                }
+              } catch (e) {}
+              if (!sourceName) {
+                try {
+                  sourceName = typeof source.title === 'function'
+                    ? String(source.title() || '') || null
+                    : null;
+                } catch (e) {}
+              }
+            }
+          } catch (e) {}
+
+          var scale = null;
+          try {
+            scale = pane && typeof pane.getMainSourcePriceScale === 'function'
+              ? pane.getMainSourcePriceScale()
+              : null;
+          } catch (e) {}
+
+          if (
+            !scale
+            || typeof scale.isAutoScale !== 'function'
+            || typeof scale.getVisiblePriceRange !== 'function'
+          ) {
+            rows.push({
+              index: i,
+              source_name: sourceName,
+              available: false,
+              auto_scale: null,
+              visible_price_range: null,
+              error: 'pane_price_scale_api_unavailable',
+            });
+            continue;
+          }
+
+          try {
+            var autoScale = scale.isAutoScale();
+            var range = scale.getVisiblePriceRange();
+            if (
+              typeof autoScale !== 'boolean'
+              || !range
+              || typeof range.from !== 'number'
+              || !Number.isFinite(range.from)
+              || typeof range.to !== 'number'
+              || !Number.isFinite(range.to)
+              || range.from >= range.to
+            ) {
+              rows.push({
+                index: i,
+                source_name: sourceName,
+                available: false,
+                auto_scale: null,
+                visible_price_range: null,
+                error: 'pane_price_scale_state_invalid',
+              });
+              continue;
+            }
+            rows.push({
+              index: i,
+              source_name: sourceName,
+              available: true,
+              auto_scale: autoScale,
+              visible_price_range: { from: range.from, to: range.to },
+            });
+          } catch (e) {
+            rows.push({
+              index: i,
+              source_name: sourceName,
+              available: false,
+              auto_scale: null,
+              visible_price_range: null,
+              error: 'pane_price_scale_read_failed',
+            });
+          }
+        }
+
+        return { pane_count: panes.length, panes: rows };
+      })()
+    `);
+    return _sanitizePaneScaleObservation(raw);
+  } catch (err) {
+    return _emptyPaneScaleObservation('pane_price_scale_read_failed');
+  }
+}
 
 export function registerChartTools(server) {
   server.tool('chart_get_state', 'Get current chart state (symbol, timeframe, chart type, indicators)', {}, async () => {
@@ -43,8 +246,24 @@ export function registerChartTools(server) {
     catch (err) { return errorResult(err); }
   });
 
-  server.tool('chart_get_visible_range', 'Get the visible date range (unix timestamps) and bars range on the chart', {}, async () => {
-    try { return jsonResult(await core.getVisibleRange()); }
+  server.tool('chart_get_visible_range', 'Get the visible date range (unix timestamps), bars range, and read-only pane scale state on the chart', {}, async () => {
+    try {
+      const result = await core.getVisibleRange();
+      const paneScales = await readPanePriceScales();
+      return jsonResult({
+        ...result,
+        visual_state: {
+          ...result.visual_state,
+          pane_price_scales: paneScales.panes,
+          pane_price_scale_observability: {
+            pane_count: paneScales.pane_count,
+            readable_count: paneScales.readable_count,
+            complete: paneScales.complete,
+            ...(paneScales.error ? { error: paneScales.error } : {}),
+          },
+        },
+      });
+    }
     catch (err) { return errorResult(err); }
   });
 

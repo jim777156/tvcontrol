@@ -47,6 +47,8 @@ function _sanitizePaneScaleObservation(payload) {
       || typeof row !== 'object'
       || row.index !== expectedIndex
       || typeof row.available !== 'boolean'
+      || typeof row.can_set_auto_scale !== 'boolean'
+      || typeof row.can_set_visible_price_range !== 'boolean'
     ) {
       return _emptyPaneScaleObservation('invalid_pane_scale_observability_payload');
     }
@@ -75,6 +77,8 @@ function _sanitizePaneScaleObservation(payload) {
         available: true,
         auto_scale: row.auto_scale,
         visible_price_range: { from: range.from, to: range.to },
+        can_set_auto_scale: row.can_set_auto_scale,
+        can_set_visible_price_range: row.can_set_visible_price_range,
       });
       readableCount += 1;
       continue;
@@ -86,6 +90,8 @@ function _sanitizePaneScaleObservation(payload) {
       available: false,
       auto_scale: null,
       visible_price_range: null,
+      can_set_auto_scale: row.can_set_auto_scale,
+      can_set_visible_price_range: row.can_set_visible_price_range,
       error: typeof row.error === 'string' && row.error
         ? row.error
         : 'pane_price_scale_unavailable',
@@ -103,12 +109,9 @@ function _sanitizePaneScaleObservation(payload) {
 /**
  * Observe every internal TradingView pane's main-source price scale.
  *
- * This is deliberately read-only. C1-B1 exists to determine whether indicator
- * panes such as MACD/RSI are already in auto-scale mode during historical
- * reconstruction or are carrying a manual/stale range. Failure to observe one
- * pane must not break the commissioned visible-range read, so unreadable panes
- * are reported explicitly rather than turning chart_get_visible_range into a
- * new failure mode.
+ * This remains deliberately read-only. C1-B2A additionally reports whether
+ * each resolved scale exposes the two setter functions C1-B2 would require;
+ * it never invokes either setter.
  */
 export async function readPanePriceScales({ evaluatePage = pageEvaluate } = {}) {
   try {
@@ -152,6 +155,9 @@ export async function readPanePriceScales({ evaluatePage = pageEvaluate } = {}) 
               : null;
           } catch (e) {}
 
+          var canSetAutoScale = !!scale && typeof scale.setAutoScale === 'function';
+          var canSetVisiblePriceRange = !!scale && typeof scale.setVisiblePriceRange === 'function';
+
           if (
             !scale
             || typeof scale.isAutoScale !== 'function'
@@ -163,6 +169,8 @@ export async function readPanePriceScales({ evaluatePage = pageEvaluate } = {}) 
               available: false,
               auto_scale: null,
               visible_price_range: null,
+              can_set_auto_scale: canSetAutoScale,
+              can_set_visible_price_range: canSetVisiblePriceRange,
               error: 'pane_price_scale_api_unavailable',
             });
             continue;
@@ -186,6 +194,8 @@ export async function readPanePriceScales({ evaluatePage = pageEvaluate } = {}) 
                 available: false,
                 auto_scale: null,
                 visible_price_range: null,
+                can_set_auto_scale: canSetAutoScale,
+                can_set_visible_price_range: canSetVisiblePriceRange,
                 error: 'pane_price_scale_state_invalid',
               });
               continue;
@@ -196,6 +206,8 @@ export async function readPanePriceScales({ evaluatePage = pageEvaluate } = {}) 
               available: true,
               auto_scale: autoScale,
               visible_price_range: { from: range.from, to: range.to },
+              can_set_auto_scale: canSetAutoScale,
+              can_set_visible_price_range: canSetVisiblePriceRange,
             });
           } catch (e) {
             rows.push({
@@ -204,6 +216,8 @@ export async function readPanePriceScales({ evaluatePage = pageEvaluate } = {}) 
               available: false,
               auto_scale: null,
               visible_price_range: null,
+              can_set_auto_scale: canSetAutoScale,
+              can_set_visible_price_range: canSetVisiblePriceRange,
               error: 'pane_price_scale_read_failed',
             });
           }

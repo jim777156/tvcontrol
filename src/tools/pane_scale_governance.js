@@ -86,7 +86,7 @@ export async function preflightPanePriceScales(
           || typeof scale.isAutoScale !== 'function'
           || typeof scale.getVisiblePriceRange !== 'function'
           || typeof scale.setAutoScale !== 'function'
-          || (!req.auto_scale && typeof scale.setVisiblePriceRange !== 'function')
+          || typeof scale.setVisiblePriceRange !== 'function'
         ) {
           return {
             success: false,
@@ -172,7 +172,7 @@ export async function applyPanePriceScales(
           || typeof scale.isAutoScale !== 'function'
           || typeof scale.getVisiblePriceRange !== 'function'
           || typeof scale.setAutoScale !== 'function'
-          || (!req.auto_scale && typeof scale.setVisiblePriceRange !== 'function')
+          || typeof scale.setVisiblePriceRange !== 'function'
         ) {
           return {
             success: false,

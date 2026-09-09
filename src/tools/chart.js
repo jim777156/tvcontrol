@@ -249,7 +249,7 @@ export function registerChartTools(server) {
     action: z.enum(['add', 'remove']).describe('Action: add or remove'),
     indicator: z.string().optional().describe('Full indicator name (required for add): "Relative Strength Index", "MACD", "Volume", "Moving Average", "Bollinger Bands", "Moving Average Exponential". Short names like RSI/EMA do NOT work.'),
     entity_id: z.string().optional().describe('Entity ID to remove (from chart_get_state). Required for remove.'),
-    inputs: z.string().optional().describe('JSON string of input overrides for the indicator (e.g. \'{"length": 20}\')'),
+    inputs: z.string().optional().describe('JSON string of input overrides for the indicator (e.g., \'{"length": 20}\')'),
   }, async ({ action, indicator, entity_id, inputs }) => {
     try {
       if (action === 'add' && !indicator) throw new ClassifiedError(CATEGORIES.INVALID_ARGUMENT, 'indicator is required for add action');
@@ -335,7 +335,7 @@ export function registerChartTools(server) {
   });
 
   server.tool('symbol_search', 'Search for symbols by name or keyword', {
-    query: z.string().describe('Search query (e.g., "AAPL", "crude oil", "ES1!")'),
+    query: z.string().describe('Search query (e.g., "AAPL", "crude oil", "ES")'),
     type: z.string().optional().describe('Filter by type (e.g., "stock", "futures", "crypto", "forex")'),
   }, async ({ query, type }) => {
     try { return jsonResult(await core.symbolSearch({ query, type })); }

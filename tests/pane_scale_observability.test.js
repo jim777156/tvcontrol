@@ -13,6 +13,8 @@ const THREE_PANE_STATE = {
       available: true,
       auto_scale: false,
       visible_price_range: { from: 1.157, to: 1.166 },
+      can_set_auto_scale: true,
+      can_set_visible_price_range: true,
     },
     {
       index: 1,
@@ -20,6 +22,8 @@ const THREE_PANE_STATE = {
       available: true,
       auto_scale: true,
       visible_price_range: { from: -0.0008, to: 0.0005 },
+      can_set_auto_scale: true,
+      can_set_visible_price_range: false,
     },
     {
       index: 2,
@@ -27,11 +31,13 @@ const THREE_PANE_STATE = {
       available: true,
       auto_scale: true,
       visible_price_range: { from: 20, to: 80 },
+      can_set_auto_scale: false,
+      can_set_visible_price_range: false,
     },
   ],
 };
 
-test('readPanePriceScales projects every readable pane scale without mutation', async () => {
+test('readPanePriceScales projects readable pane state and setter capability without mutation', async () => {
   let expression = '';
   const result = await readPanePriceScales({
     evaluatePage: async (value) => {
@@ -51,8 +57,10 @@ test('readPanePriceScales projects every readable pane scale without mutation', 
   assert.match(expression, /getMainSourcePriceScale/);
   assert.match(expression, /isAutoScale/);
   assert.match(expression, /getVisiblePriceRange/);
-  assert.doesNotMatch(expression, /setAutoScale/);
-  assert.doesNotMatch(expression, /setVisiblePriceRange/);
+  assert.match(expression, /typeof scale\.setAutoScale === 'function'/);
+  assert.match(expression, /typeof scale\.setVisiblePriceRange === 'function'/);
+  assert.doesNotMatch(expression, /\.setAutoScale\s*\(/);
+  assert.doesNotMatch(expression, /\.setVisiblePriceRange\s*\(/);
   assert.doesNotMatch(expression, /setBarSpacing/);
   assert.doesNotMatch(expression, /setRightOffset/);
 });
@@ -69,6 +77,8 @@ test('readPanePriceScales reports an unreadable indicator pane without failing t
           available: false,
           auto_scale: null,
           visible_price_range: null,
+          can_set_auto_scale: false,
+          can_set_visible_price_range: false,
           error: 'pane_price_scale_api_unavailable',
         },
         THREE_PANE_STATE.panes[2],
@@ -85,6 +95,8 @@ test('readPanePriceScales reports an unreadable indicator pane without failing t
     available: false,
     auto_scale: null,
     visible_price_range: null,
+    can_set_auto_scale: false,
+    can_set_visible_price_range: false,
     error: 'pane_price_scale_api_unavailable',
   });
 });
@@ -113,7 +125,7 @@ test('readPanePriceScales fails soft on an invalid or unavailable browser observ
   });
 });
 
-test('C1-B1 does not add a child tool to the commissioned read-only surface', () => {
+test('C1-B2A does not add a child tool to the commissioned read-only surface', () => {
   assert.equal(READONLY_TOOLS.length, 59);
   assert.equal(READONLY_TOOLS.filter((name) => name === 'chart_get_visible_range').length, 1);
 });

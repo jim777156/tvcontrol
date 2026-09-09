@@ -3,6 +3,18 @@ import { jsonResult, errorResult } from './_format.js';
 import * as core from '../core/chart.js';
 import { evaluate as pageEvaluate } from '../connection.js';
 import { ClassifiedError, CATEGORIES } from '../errors.js';
+import {
+  applyPanePriceScales,
+  normalizePanePriceScaleRequests,
+  preflightPanePriceScales,
+} from './pane_scale_governance.js';
+
+const paneScaleRequestSchema = z.object({
+  index: z.number().int().min(1),
+  auto_scale: z.boolean(),
+  from: z.number().optional(),
+  to: z.number().optional(),
+});
 
 function _emptyPaneScaleObservation(error) {
   return {
@@ -237,7 +249,7 @@ export function registerChartTools(server) {
     action: z.enum(['add', 'remove']).describe('Action: add or remove'),
     indicator: z.string().optional().describe('Full indicator name (required for add): "Relative Strength Index", "MACD", "Volume", "Moving Average", "Bollinger Bands", "Moving Average Exponential". Short names like RSI/EMA do NOT work.'),
     entity_id: z.string().optional().describe('Entity ID to remove (from chart_get_state). Required for remove.'),
-    inputs: z.string().optional().describe('JSON string of input overrides for the indicator (e.g., \'{"length": 20}\')'),
+    inputs: z.string().optional().describe('JSON string of input overrides for the indicator (e.g. \'{"length": 20}\')'),
   }, async ({ action, indicator, entity_id, inputs }) => {
     try {
       if (action === 'add' && !indicator) throw new ClassifiedError(CATEGORIES.INVALID_ARGUMENT, 'indicator is required for add action');
@@ -267,7 +279,7 @@ export function registerChartTools(server) {
     catch (err) { return errorResult(err); }
   });
 
-  server.tool('chart_set_visible_range', 'Zoom the chart to a specific date range (unix timestamps)', {
+  server.tool('chart_set_visible_range', 'Zoom the chart and optionally govern readable secondary pane scales', {
     from: z.coerce.number().describe('Start of range (unix timestamp in seconds)'),
     to: z.coerce.number().describe('End of range (unix timestamp in seconds)'),
     bar_spacing: z.coerce.number().optional().describe('Optional time-scale bar spacing; must be finite and greater than 0'),
@@ -275,9 +287,25 @@ export function registerChartTools(server) {
     main_price_auto_scale: z.boolean().optional().describe('Optional main source price-scale auto/manual mode'),
     main_price_from: z.coerce.number().optional().describe('Optional manual main source price range lower bound'),
     main_price_to: z.coerce.number().optional().describe('Optional manual main source price range upper bound'),
-  }, async ({ from, to, bar_spacing, right_offset, main_price_auto_scale, main_price_from, main_price_to }) => {
+    pane_price_scales: z.array(paneScaleRequestSchema).max(16).optional().describe(
+      'Optional governed secondary pane scales by zero-based pane index. Index 0 is reserved for the main price scale. Use auto_scale=true with no range, or auto_scale=false with from/to.',
+    ),
+  }, async ({
+    from,
+    to,
+    bar_spacing,
+    right_offset,
+    main_price_auto_scale,
+    main_price_from,
+    main_price_to,
+    pane_price_scales,
+  }) => {
     try {
-      return jsonResult(await core.setVisibleRange({
+      const governedPanes = normalizePanePriceScaleRequests(pane_price_scales);
+      if (governedPanes.length > 0) {
+        await preflightPanePriceScales(governedPanes);
+      }
+      const result = await core.setVisibleRange({
         from,
         to,
         bar_spacing,
@@ -285,7 +313,11 @@ export function registerChartTools(server) {
         main_price_auto_scale,
         main_price_from,
         main_price_to,
-      }));
+      });
+      if (governedPanes.length > 0) {
+        await applyPanePriceScales(governedPanes);
+      }
+      return jsonResult(result);
     }
     catch (err) { return errorResult(err); }
   });
@@ -303,7 +335,7 @@ export function registerChartTools(server) {
   });
 
   server.tool('symbol_search', 'Search for symbols by name or keyword', {
-    query: z.string().describe('Search query (e.g., "AAPL", "crude oil", "ES")'),
+    query: z.string().describe('Search query (e.g., "AAPL", "crude oil", "ES1!")'),
     type: z.string().optional().describe('Filter by type (e.g., "stock", "futures", "crypto", "forex")'),
   }, async ({ query, type }) => {
     try { return jsonResult(await core.symbolSearch({ query, type })); }

@@ -4,6 +4,17 @@ import * as chart from './chart.js';
 
 const CHART_API = 'window.TradingViewApi._activeChartWidgetWV.value()';
 const MAX_SECONDARY_PANES = 12;
+const SECONDARY_STATE_FAILURES = new Set([
+  'visible_range_read_threw',
+  'auto_scale_read_threw',
+  'auto_scale_not_boolean',
+  'visible_range_missing',
+  'visible_range_from_not_number',
+  'visible_range_from_not_finite',
+  'visible_range_to_not_number',
+  'visible_range_to_not_finite',
+  'visible_range_order_invalid',
+]);
 
 function _resolve(deps) {
   return {
@@ -48,6 +59,23 @@ function _normalizeScaleSnapshot(value) {
   });
 }
 
+function _boundedSecondaryReadFailure(result) {
+  const error = typeof result?.error === 'string' ? result.error : 'unknown_error';
+  const paneIndex = (
+    Number.isInteger(result?.pane_index)
+    && result.pane_index >= 1
+    && result.pane_index <= MAX_SECONDARY_PANES
+  ) ? result.pane_index : null;
+  const stateFailure = SECONDARY_STATE_FAILURES.has(result?.state_failure)
+    ? result.state_failure
+    : null;
+
+  const parts = [error];
+  if (paneIndex !== null) parts.push(`pane_index=${paneIndex}`);
+  if (stateFailure !== null) parts.push(`state_failure=${stateFailure}`);
+  return parts.join('; ');
+}
+
 async function _readSecondaryPriceScales(evaluate) {
   const result = await evaluate(`
     (function() {
@@ -77,18 +105,83 @@ async function _readSecondaryPriceScales(evaluate) {
         ) {
           return { success: false, error: 'secondary_price_scale_api_unavailable', pane_index: i };
         }
-        var range = scale.getVisiblePriceRange();
-        var autoScale = scale.isAutoScale();
-        if (
-          typeof autoScale !== 'boolean'
-          || !range
-          || typeof range.from !== 'number'
-          || !Number.isFinite(range.from)
-          || typeof range.to !== 'number'
-          || !Number.isFinite(range.to)
-          || range.from >= range.to
-        ) {
-          return { success: false, error: 'secondary_price_scale_state_invalid', pane_index: i };
+        var range;
+        var autoScale;
+        try {
+          range = scale.getVisiblePriceRange();
+        } catch (_error) {
+          return {
+            success: false,
+            error: 'secondary_price_scale_state_invalid',
+            pane_index: i,
+            state_failure: 'visible_range_read_threw',
+          };
+        }
+        try {
+          autoScale = scale.isAutoScale();
+        } catch (_error) {
+          return {
+            success: false,
+            error: 'secondary_price_scale_state_invalid',
+            pane_index: i,
+            state_failure: 'auto_scale_read_threw',
+          };
+        }
+        if (typeof autoScale !== 'boolean') {
+          return {
+            success: false,
+            error: 'secondary_price_scale_state_invalid',
+            pane_index: i,
+            state_failure: 'auto_scale_not_boolean',
+          };
+        }
+        if (!range) {
+          return {
+            success: false,
+            error: 'secondary_price_scale_state_invalid',
+            pane_index: i,
+            state_failure: 'visible_range_missing',
+          };
+        }
+        if (typeof range.from !== 'number') {
+          return {
+            success: false,
+            error: 'secondary_price_scale_state_invalid',
+            pane_index: i,
+            state_failure: 'visible_range_from_not_number',
+          };
+        }
+        if (!Number.isFinite(range.from)) {
+          return {
+            success: false,
+            error: 'secondary_price_scale_state_invalid',
+            pane_index: i,
+            state_failure: 'visible_range_from_not_finite',
+          };
+        }
+        if (typeof range.to !== 'number') {
+          return {
+            success: false,
+            error: 'secondary_price_scale_state_invalid',
+            pane_index: i,
+            state_failure: 'visible_range_to_not_number',
+          };
+        }
+        if (!Number.isFinite(range.to)) {
+          return {
+            success: false,
+            error: 'secondary_price_scale_state_invalid',
+            pane_index: i,
+            state_failure: 'visible_range_to_not_finite',
+          };
+        }
+        if (range.from >= range.to) {
+          return {
+            success: false,
+            error: 'secondary_price_scale_state_invalid',
+            pane_index: i,
+            state_failure: 'visible_range_order_invalid',
+          };
         }
         scales.push({
           pane_index: i,
@@ -109,7 +202,7 @@ async function _readSecondaryPriceScales(evaluate) {
   if (result?.success !== true || !Array.isArray(result.scales)) {
     throw new ClassifiedError(
       CATEGORIES.API_UNEXPECTED,
-      `TradingView secondary pane price-scale read failed: ${result?.error || 'unknown error'}`,
+      `TradingView secondary pane price-scale read failed: ${_boundedSecondaryReadFailure(result)}`,
     );
   }
   return result.scales;

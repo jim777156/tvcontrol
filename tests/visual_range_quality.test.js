@@ -60,7 +60,7 @@ function runBrowserExpression(expression, panes) {
       },
     },
   };
-  return Function('window', `return ${expression}`)(fakeWindow);
+  return Function('window', `return (${expression})`)(fakeWindow);
 }
 
 function browserAwareDeps(panes) {

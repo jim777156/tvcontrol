@@ -1,0 +1,23 @@
+name: Historical Evidence Quality Patch CI
+
+on:
+  push:
+    branches:
+      - patch/historical-evidence-quality-v0.1
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Lint
+        run: npm run lint
+      - name: Full offline tests
+        run: npm run test:offline
+      - name: CLI help sanity
+        run: node src/cli/index.js --help

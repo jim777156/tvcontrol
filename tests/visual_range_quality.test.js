@@ -29,8 +29,24 @@ function secondaryScales(autoScale = false) {
   };
 }
 
-test('getVisibleRange appends bounded secondary pane scale state', async () => {
+test('getVisibleRange preserves base behavior unless secondary state is requested', async () => {
+  let secondaryReadAttempted = false;
   const result = await getVisibleRange({
+    _deps: {
+      evaluate: async (expression) => {
+        if (expression.includes('scales.push')) secondaryReadAttempted = true;
+        return baseRange();
+      },
+    },
+  });
+
+  assert.equal(secondaryReadAttempted, false);
+  assert.deepEqual(result, baseRange());
+});
+
+test('getVisibleRange appends bounded secondary pane scale state when explicitly requested', async () => {
+  const result = await getVisibleRange({
+    include_secondary_price_scales: true,
     _deps: {
       evaluate: async (expression) => {
         if (expression.includes('scales.push')) return secondaryScales(false);
@@ -44,6 +60,29 @@ test('getVisibleRange appends bounded secondary pane scale state', async () => {
     result.visual_state.secondary_price_scales,
     secondaryScales(false).scales,
   );
+});
+
+test('setVisibleRange preserves base behavior when no secondary command is supplied', async () => {
+  let secondaryReadAttempted = false;
+  const result = await setVisibleRange({
+    from: 100,
+    to: 300,
+    right_offset: 7.25,
+    _deps: {
+      sleep: async () => {},
+      evaluate: async (expression) => {
+        if (expression.includes('requestMoreDataAvailable')) {
+          return { firstTime: 90, more: false };
+        }
+        if (expression.includes('scales.push')) secondaryReadAttempted = true;
+        if (expression.includes('getVisibleRange')) return baseRange();
+        return { success: true };
+      },
+    },
+  });
+
+  assert.equal(secondaryReadAttempted, false);
+  assert.deepEqual(result, baseRange());
 });
 
 test('setVisibleRange temporarily auto-scales every secondary study pane', async () => {

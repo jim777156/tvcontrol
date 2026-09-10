@@ -58,14 +58,21 @@ async function _readSecondaryPriceScales(evaluate) {
         return { success: false, error: 'secondary_pane_limit_exceeded' };
       }
       var scales = [];
+      var noScalePanes = [];
       for (var i = 1; i < panes.length; i++) {
         var pane = panes[i];
-        var scale = pane && typeof pane.getMainSourcePriceScale === 'function'
-          ? pane.getMainSourcePriceScale()
-          : null;
+        if (!pane || typeof pane.getMainSourcePriceScale !== 'function') {
+          return { success: false, error: 'secondary_pane_api_unavailable', pane_index: i };
+        }
+        var scale = pane.getMainSourcePriceScale();
+        // TradingView documents null here when the pane's main source is in
+        // "No Scale" mode. That is a legitimate pane state, not an API failure.
+        if (!scale) {
+          noScalePanes.push(i);
+          continue;
+        }
         if (
-          !scale
-          || typeof scale.isAutoScale !== 'function'
+          typeof scale.isAutoScale !== 'function'
           || typeof scale.getVisiblePriceRange !== 'function'
         ) {
           return { success: false, error: 'secondary_price_scale_api_unavailable', pane_index: i };
@@ -90,7 +97,13 @@ async function _readSecondaryPriceScales(evaluate) {
           to: range.to,
         });
       }
-      return { success: true, pane_count: panes.length, scales: scales };
+      return {
+        success: true,
+        pane_count: panes.length,
+        scalable_pane_count: scales.length,
+        no_scale_panes: noScalePanes,
+        scales: scales,
+      };
     })()
   `);
   if (result?.success !== true || !Array.isArray(result.scales)) {
@@ -114,28 +127,39 @@ async function _applySecondaryPriceScales(evaluate, { autoScale, restoreScales }
       var panes = typeof chart.getPanes === 'function' ? chart.getPanes() : null;
       if (!Array.isArray(panes)) return { success: false, error: 'pane_api_unavailable' };
       if (command.mode === 'auto') {
+        var applied = 0;
+        var skippedNoScale = [];
         for (var i = 1; i < panes.length; i++) {
           var autoPane = panes[i];
-          var autoScale = autoPane && typeof autoPane.getMainSourcePriceScale === 'function'
-            ? autoPane.getMainSourcePriceScale()
-            : null;
-          if (!autoScale || typeof autoScale.setAutoScale !== 'function') {
+          if (!autoPane || typeof autoPane.getMainSourcePriceScale !== 'function') {
+            return { success: false, error: 'secondary_pane_api_unavailable', pane_index: i };
+          }
+          var autoScale = autoPane.getMainSourcePriceScale();
+          if (!autoScale) {
+            skippedNoScale.push(i);
+            continue;
+          }
+          if (typeof autoScale.setAutoScale !== 'function') {
             return { success: false, error: 'secondary_price_scale_autoscale_unavailable', pane_index: i };
           }
           autoScale.setAutoScale(true);
+          applied += 1;
         }
-        return { success: true, applied: Math.max(0, panes.length - 1) };
+        return { success: true, applied: applied, no_scale_panes: skippedNoScale };
       }
       if (command.mode === 'restore') {
-        if (!Array.isArray(command.scales) || command.scales.length !== Math.max(0, panes.length - 1)) {
-          return { success: false, error: 'secondary_price_scale_restore_count_mismatch' };
+        if (!Array.isArray(command.scales)) {
+          return { success: false, error: 'secondary_price_scale_restore_state_invalid' };
         }
         for (var j = 0; j < command.scales.length; j++) {
           var wanted = command.scales[j];
           var restorePane = panes[wanted.pane_index];
-          var restoreScale = restorePane && typeof restorePane.getMainSourcePriceScale === 'function'
-            ? restorePane.getMainSourcePriceScale()
-            : null;
+          if (!restorePane || typeof restorePane.getMainSourcePriceScale !== 'function') {
+            return { success: false, error: 'secondary_pane_restore_unavailable', pane_index: wanted.pane_index };
+          }
+          var restoreScale = restorePane.getMainSourcePriceScale();
+          // A pane that had a real scale at capture time must still expose that
+          // scale for exact restoration. If it disappears, fail closed.
           if (
             !restoreScale
             || typeof restoreScale.setAutoScale !== 'function'

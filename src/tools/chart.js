@@ -44,8 +44,10 @@ export function registerChartTools(server) {
     catch (err) { return errorResult(err); }
   });
 
-  server.tool('chart_get_visible_range', 'Get the visible date range (unix timestamps), bars range, and bounded chart price-scale state', {}, async () => {
-    try { return jsonResult(await visualRange.getVisibleRange()); }
+  server.tool('chart_get_visible_range', 'Get the visible date range (unix timestamps), bars range, and bounded chart price-scale state', {
+    include_secondary_price_scales: z.boolean().optional().describe('Include bounded secondary study-pane price-scale state for exact evidence-view restoration'),
+  }, async ({ include_secondary_price_scales }) => {
+    try { return jsonResult(await visualRange.getVisibleRange({ include_secondary_price_scales })); }
     catch (err) { return errorResult(err); }
   });
 

@@ -30,6 +30,58 @@ function secondaryScales(autoScale = false) {
   };
 }
 
+function statefulScale({ autoScale = false, from = -0.0012, to = 0.0008 } = {}) {
+  const state = { autoScale, from, to };
+  return {
+    state,
+    isAutoScale: () => state.autoScale,
+    getVisiblePriceRange: () => ({ from: state.from, to: state.to }),
+    setAutoScale: (value) => { state.autoScale = value; },
+    setVisiblePriceRange: (range) => {
+      state.from = range.from;
+      state.to = range.to;
+    },
+  };
+}
+
+function paneWithScale(scale) {
+  return { getMainSourcePriceScale: () => scale };
+}
+
+function paneWithoutScale() {
+  return { getMainSourcePriceScale: () => null };
+}
+
+function runBrowserExpression(expression, panes) {
+  const fakeWindow = {
+    TradingViewApi: {
+      _activeChartWidgetWV: {
+        value: () => ({ getPanes: () => panes }),
+      },
+    },
+  };
+  return Function('window', `return ${expression}`)(fakeWindow);
+}
+
+function browserAwareDeps(panes) {
+  return {
+    sleep: async () => {},
+    evaluate: async (expression) => {
+      if (
+        expression.includes('scales.push')
+        || expression.includes('var command = JSON.parse')
+      ) {
+        return runBrowserExpression(expression, panes);
+      }
+      if (expression.includes('requestMoreDataAvailable')) {
+        return { firstTime: 90, more: false };
+      }
+      if (expression.includes('getVisibleRange')) return baseRange();
+      return { success: true };
+    },
+  };
+}
+
 test('getVisibleRange preserves base behavior unless secondary state is requested', async () => {
   let secondaryReadAttempted = false;
   const deps = {
@@ -61,6 +113,39 @@ test('getVisibleRange appends bounded secondary pane scale state when explicitly
   assert.deepEqual(
     result.visual_state.secondary_price_scales,
     secondaryScales(false).scales,
+  );
+});
+
+test('getVisibleRange skips a documented no-scale pane but still captures scalable panes', async () => {
+  const macdScale = statefulScale();
+  const panes = [
+    {},
+    paneWithScale(macdScale),
+    paneWithoutScale(),
+  ];
+
+  const result = await getVisibleRange({
+    include_secondary_price_scales: true,
+    _deps: browserAwareDeps(panes),
+  });
+
+  assert.deepEqual(result.visual_state.secondary_price_scales, [
+    { pane_index: 1, auto_scale: false, from: -0.0012, to: 0.0008 },
+  ]);
+});
+
+test('getVisibleRange still fails closed when a secondary pane API is actually unavailable', async () => {
+  const panes = [{}, {}];
+
+  await assert.rejects(
+    getVisibleRange({
+      include_secondary_price_scales: true,
+      _deps: browserAwareDeps(panes),
+    }),
+    (error) => (
+      error.category === 'api_unexpected'
+      && error.message.includes('secondary_pane_api_unavailable')
+    ),
   );
 });
 
@@ -123,6 +208,31 @@ test('setVisibleRange temporarily auto-scales every secondary study pane', async
   assert.ok(result.visual_state.secondary_price_scales.every((scale) => scale.auto_scale));
 });
 
+test('setVisibleRange auto-scales scalable panes and skips documented no-scale panes', async () => {
+  const macdScale = statefulScale({ autoScale: false });
+  const panes = [
+    {},
+    paneWithScale(macdScale),
+    paneWithoutScale(),
+  ];
+
+  const result = await setVisibleRange({
+    from: 100,
+    to: 300,
+    bar_spacing: 7.5,
+    main_price_auto_scale: false,
+    main_price_from: 0.98,
+    main_price_to: 1.01,
+    secondary_price_auto_scale: true,
+    _deps: browserAwareDeps(panes),
+  });
+
+  assert.equal(macdScale.state.autoScale, true);
+  assert.deepEqual(result.visual_state.secondary_price_scales, [
+    { pane_index: 1, auto_scale: true, from: -0.0012, to: 0.0008 },
+  ]);
+});
+
 test('setVisibleRange restores captured secondary pane scale modes and ranges', async () => {
   const captured = secondaryScales(false).scales;
   const calls = [];
@@ -151,6 +261,31 @@ test('setVisibleRange restores captured secondary pane scale modes and ranges', 
   const applyCall = calls.find((expression) => expression.includes('var command = JSON.parse'));
   assert.ok(applyCall);
   assert.match(applyCall, /restore/);
+  assert.deepEqual(result.visual_state.secondary_price_scales, captured);
+});
+
+test('setVisibleRange restores captured scalable panes without requiring one scale per pane', async () => {
+  const macdScale = statefulScale({ autoScale: true, from: -2, to: 2 });
+  const panes = [
+    {},
+    paneWithScale(macdScale),
+    paneWithoutScale(),
+  ];
+  const captured = [
+    { pane_index: 1, auto_scale: false, from: -0.0012, to: 0.0008 },
+  ];
+
+  const result = await setVisibleRange({
+    from: 100,
+    to: 300,
+    right_offset: 7.25,
+    secondary_price_scales: captured,
+    _deps: browserAwareDeps(panes),
+  });
+
+  assert.equal(macdScale.state.autoScale, false);
+  assert.equal(macdScale.state.from, -0.0012);
+  assert.equal(macdScale.state.to, 0.0008);
   assert.deepEqual(result.visual_state.secondary_price_scales, captured);
 });
 

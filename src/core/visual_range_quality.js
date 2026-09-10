@@ -174,9 +174,11 @@ function _withSecondaryState(baseResult, scales) {
   };
 }
 
-export async function getVisibleRange({ _deps } = {}) {
-  const { evaluate } = _resolve(_deps);
+export async function getVisibleRange({ include_secondary_price_scales = false, _deps } = {}) {
   const baseResult = await chart.getVisibleRange({ _deps });
+  if (include_secondary_price_scales !== true) return baseResult;
+
+  const { evaluate } = _resolve(_deps);
   const scales = await _readSecondaryPriceScales(evaluate);
   return _withSecondaryState(baseResult, scales);
 }
@@ -236,6 +238,8 @@ export async function setVisibleRange({
       restoreScales: normalizedScales,
     });
     await sleep(300);
+  } else {
+    return baseResult;
   }
 
   const scales = await _readSecondaryPriceScales(evaluate);

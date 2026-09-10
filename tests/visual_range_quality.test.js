@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import * as chart from '../src/core/chart.js';
 import { getVisibleRange, setVisibleRange } from '../src/core/visual_range_quality.js';
 
 const BASE_VISUAL_STATE = {
@@ -31,17 +32,18 @@ function secondaryScales(autoScale = false) {
 
 test('getVisibleRange preserves base behavior unless secondary state is requested', async () => {
   let secondaryReadAttempted = false;
-  const result = await getVisibleRange({
-    _deps: {
-      evaluate: async (expression) => {
-        if (expression.includes('scales.push')) secondaryReadAttempted = true;
-        return baseRange();
-      },
+  const deps = {
+    evaluate: async (expression) => {
+      if (expression.includes('scales.push')) secondaryReadAttempted = true;
+      return baseRange();
     },
-  });
+  };
+
+  const expected = await chart.getVisibleRange({ _deps: deps });
+  const result = await getVisibleRange({ _deps: deps });
 
   assert.equal(secondaryReadAttempted, false);
-  assert.deepEqual(result, baseRange());
+  assert.deepEqual(result, expected);
 });
 
 test('getVisibleRange appends bounded secondary pane scale state when explicitly requested', async () => {
@@ -64,25 +66,29 @@ test('getVisibleRange appends bounded secondary pane scale state when explicitly
 
 test('setVisibleRange preserves base behavior when no secondary command is supplied', async () => {
   let secondaryReadAttempted = false;
-  const result = await setVisibleRange({
+  const deps = {
+    sleep: async () => {},
+    evaluate: async (expression) => {
+      if (expression.includes('requestMoreDataAvailable')) {
+        return { firstTime: 90, more: false };
+      }
+      if (expression.includes('scales.push')) secondaryReadAttempted = true;
+      if (expression.includes('getVisibleRange')) return baseRange();
+      return { success: true };
+    },
+  };
+  const args = {
     from: 100,
     to: 300,
     right_offset: 7.25,
-    _deps: {
-      sleep: async () => {},
-      evaluate: async (expression) => {
-        if (expression.includes('requestMoreDataAvailable')) {
-          return { firstTime: 90, more: false };
-        }
-        if (expression.includes('scales.push')) secondaryReadAttempted = true;
-        if (expression.includes('getVisibleRange')) return baseRange();
-        return { success: true };
-      },
-    },
-  });
+    _deps: deps,
+  };
+
+  const expected = await chart.setVisibleRange(args);
+  const result = await setVisibleRange(args);
 
   assert.equal(secondaryReadAttempted, false);
-  assert.deepEqual(result, baseRange());
+  assert.deepEqual(result, expected);
 });
 
 test('setVisibleRange temporarily auto-scales every secondary study pane', async () => {

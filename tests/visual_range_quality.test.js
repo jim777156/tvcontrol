@@ -289,6 +289,33 @@ test('setVisibleRange restores captured scalable panes without requiring one sca
   assert.deepEqual(result.visual_state.secondary_price_scales, captured);
 });
 
+test('setVisibleRange restores auto-scale-only pane without a numeric-range setter', async () => {
+  const state = { autoScale: false };
+  const autoOnlyScale = {
+    isAutoScale: () => state.autoScale,
+    getVisiblePriceRange: () => null,
+    setAutoScale: (value) => { state.autoScale = value; },
+  };
+  const panes = [
+    {},
+    paneWithScale(autoOnlyScale),
+  ];
+  const captured = [
+    { pane_index: 1, auto_scale: true, from: null, to: null },
+  ];
+
+  const result = await setVisibleRange({
+    from: 100,
+    to: 300,
+    right_offset: 7.25,
+    secondary_price_scales: captured,
+    _deps: browserAwareDeps(panes),
+  });
+
+  assert.equal(state.autoScale, true);
+  assert.deepEqual(result.visual_state.secondary_price_scales, captured);
+});
+
 test('setVisibleRange rejects conflicting secondary pane scale commands', async () => {
   await assert.rejects(
     setVisibleRange({

@@ -59,15 +59,6 @@ const CASES = [
     expectedAutoScale: false,
   },
   {
-    name: 'missing visible range while auto scale',
-    scale: {
-      isAutoScale: () => true,
-      getVisiblePriceRange: () => null,
-    },
-    expected: 'visible_range_missing',
-    expectedAutoScale: true,
-  },
-  {
     name: 'non-boolean auto-scale state',
     scale: {
       isAutoScale: () => 'auto',
@@ -95,6 +86,27 @@ const CASES = [
     expectedAutoScale: null,
   },
 ];
+
+test('secondary auto-scale pane may omit its numeric visible range', async () => {
+  const panes = [
+    {},
+    paneWithScale(validScale()),
+    paneWithScale({
+      isAutoScale: () => true,
+      getVisiblePriceRange: () => null,
+    }),
+  ];
+
+  const result = await getVisibleRange({
+    include_secondary_price_scales: true,
+    _deps: depsFor(panes),
+  });
+
+  assert.deepEqual(result.visual_state.secondary_price_scales, [
+    { pane_index: 1, auto_scale: false, from: -0.0012, to: 0.0008 },
+    { pane_index: 2, auto_scale: true, from: null, to: null },
+  ]);
+});
 
 test('secondary scale state failures expose only bounded pane/predicate diagnostics', async (t) => {
   for (const diagnosticCase of CASES) {

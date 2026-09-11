@@ -69,10 +69,15 @@ function _boundedSecondaryReadFailure(result) {
   const stateFailure = SECONDARY_STATE_FAILURES.has(result?.state_failure)
     ? result.state_failure
     : null;
+  const autoScale = (
+    stateFailure === 'visible_range_missing'
+    && typeof result?.auto_scale === 'boolean'
+  ) ? result.auto_scale : null;
 
   const parts = [error];
   if (paneIndex !== null) parts.push(`pane_index=${paneIndex}`);
   if (stateFailure !== null) parts.push(`state_failure=${stateFailure}`);
+  if (autoScale !== null) parts.push(`auto_scale=${autoScale}`);
   return parts.join('; ');
 }
 
@@ -141,6 +146,7 @@ async function _readSecondaryPriceScales(evaluate) {
             error: 'secondary_price_scale_state_invalid',
             pane_index: i,
             state_failure: 'visible_range_missing',
+            auto_scale: autoScale,
           };
         }
         if (typeof range.from !== 'number') {

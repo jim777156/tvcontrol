@@ -44,6 +44,20 @@ function _symbolMatches(current, expected) {
   return currentBare === expectedBare;
 }
 
+function _canonicalTimeframe(value) {
+  const normalized = String(value || '').trim().toUpperCase();
+  // TradingView Desktop can report the daily resolution as 1D after a caller
+  // requested D. They are the same resolution; all other values remain exact.
+  if (normalized === 'D' || normalized === '1D') return 'D';
+  return normalized;
+}
+
+export function timeframeMatches(current, expected) {
+  if (!expected) return true;
+  if (!current) return false;
+  return _canonicalTimeframe(current) === _canonicalTimeframe(expected);
+}
+
 export async function waitForChartReady(expectedSymbol = null, expectedTf = null, timeout = DEFAULT_TIMEOUT, _deps = {}) {
   const evaluatePage = _deps.evaluate || evaluate;
   const sleep = _deps.sleep || ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
@@ -121,7 +135,7 @@ export async function waitForChartReady(expectedSymbol = null, expectedTf = null
       continue;
     }
 
-    if (expectedTf && state.currentTf && String(state.currentTf).toUpperCase() !== String(expectedTf).toUpperCase()) {
+    if (!timeframeMatches(state.currentTf, expectedTf)) {
       stableCount = 0;
       await sleep(POLL_INTERVAL);
       continue;

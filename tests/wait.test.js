@@ -1,6 +1,6 @@
 import test, { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { waitForChartReady, symbolMatches } from '../src/wait.js';
+import { waitForChartReady, symbolMatches, timeframeMatches } from '../src/wait.js';
 
 test('waitForChartReady accepts TradingView canonical exchange prefixes', async () => {
   const states = [
@@ -9,6 +9,19 @@ test('waitForChartReady accepts TradingView canonical exchange prefixes', async 
     { isLoading: false, barCount: 100, currentSymbol: 'NASDAQ:MSFT', currentTf: '1D' },
   ];
   const ready = await waitForChartReady('MSFT', '1D', 1000, {
+    evaluate: async () => states.shift() || states.at(-1),
+    sleep: async () => {},
+  });
+  assert.equal(ready, true);
+});
+
+test('waitForChartReady accepts D when TradingView reports 1D', async () => {
+  const states = [
+    { isLoading: false, barCount: 100, currentSymbol: 'OANDA:NZDUSD', currentTf: '1D' },
+    { isLoading: false, barCount: 100, currentSymbol: 'OANDA:NZDUSD', currentTf: '1D' },
+    { isLoading: false, barCount: 100, currentSymbol: 'OANDA:NZDUSD', currentTf: '1D' },
+  ];
+  const ready = await waitForChartReady('OANDA:NZDUSD', 'D', 1000, {
     evaluate: async () => states.shift() || states.at(-1),
     sleep: async () => {},
   });
@@ -82,5 +95,17 @@ describe('symbolMatches asymmetry', () => {
     assert.equal(symbolMatches('NASDAQ:AAPL', 'NASDAQ:AAPL'), true);
     assert.equal(symbolMatches('anything', null), true);
     assert.equal(symbolMatches(null, 'NASDAQ:AAPL'), false);
+  });
+});
+
+describe('timeframeMatches daily alias', () => {
+  it('treats D and 1D as the same daily resolution in either direction', () => {
+    assert.equal(timeframeMatches('1D', 'D'), true);
+    assert.equal(timeframeMatches('D', '1D'), true);
+  });
+
+  it('keeps unrelated timeframes exact', () => {
+    assert.equal(timeframeMatches('240', 'D'), false);
+    assert.equal(timeframeMatches('60', '60'), true);
   });
 });

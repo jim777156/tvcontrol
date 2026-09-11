@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { jsonResult, errorResult } from './_format.js';
 import * as core from '../core/chart.js';
+import * as visualRange from '../core/visual_range_quality.js';
 import { ClassifiedError, CATEGORIES } from '../errors.js';
 
 export function registerChartTools(server) {
@@ -43,9 +44,18 @@ export function registerChartTools(server) {
     catch (err) { return errorResult(err); }
   });
 
-  server.tool('chart_get_visible_range', 'Get the visible date range (unix timestamps) and bars range on the chart', {}, async () => {
-    try { return jsonResult(await core.getVisibleRange()); }
+  server.tool('chart_get_visible_range', 'Get the visible date range (unix timestamps), bars range, and bounded chart price-scale state', {
+    include_secondary_price_scales: z.boolean().optional().describe('Include bounded secondary study-pane price-scale state for exact evidence-view restoration'),
+  }, async ({ include_secondary_price_scales }) => {
+    try { return jsonResult(await visualRange.getVisibleRange({ include_secondary_price_scales })); }
     catch (err) { return errorResult(err); }
+  });
+
+  const secondaryPriceScaleSchema = z.object({
+    pane_index: z.coerce.number().int().min(1),
+    auto_scale: z.boolean(),
+    from: z.coerce.number(),
+    to: z.coerce.number(),
   });
 
   server.tool('chart_set_visible_range', 'Zoom the chart to a specific date range (unix timestamps)', {
@@ -56,9 +66,21 @@ export function registerChartTools(server) {
     main_price_auto_scale: z.boolean().optional().describe('Optional main source price-scale auto/manual mode'),
     main_price_from: z.coerce.number().optional().describe('Optional manual main source price range lower bound'),
     main_price_to: z.coerce.number().optional().describe('Optional manual main source price range upper bound'),
-  }, async ({ from, to, bar_spacing, right_offset, main_price_auto_scale, main_price_from, main_price_to }) => {
+    secondary_price_auto_scale: z.boolean().optional().describe('Set all secondary study panes to auto-scale for a temporary evidence view'),
+    secondary_price_scales: z.array(secondaryPriceScaleSchema).max(12).optional().describe('Exact secondary study-pane price-scale state captured by chart_get_visible_range, used for restoration'),
+  }, async ({
+    from,
+    to,
+    bar_spacing,
+    right_offset,
+    main_price_auto_scale,
+    main_price_from,
+    main_price_to,
+    secondary_price_auto_scale,
+    secondary_price_scales,
+  }) => {
     try {
-      return jsonResult(await core.setVisibleRange({
+      return jsonResult(await visualRange.setVisibleRange({
         from,
         to,
         bar_spacing,
@@ -66,6 +88,8 @@ export function registerChartTools(server) {
         main_price_auto_scale,
         main_price_from,
         main_price_to,
+        secondary_price_auto_scale,
+        secondary_price_scales,
       }));
     }
     catch (err) { return errorResult(err); }

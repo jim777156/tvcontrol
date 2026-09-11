@@ -40,14 +40,14 @@ function _normalizeScaleSnapshot(value) {
     const autoScale = item?.auto_scale;
     const from = item?.from;
     const to = item?.to;
+    const rangeMissing = from == null && to == null;
+    const rangeValid = _finite(from) && _finite(to) && from < to;
     if (
       !Number.isInteger(paneIndex)
       || paneIndex < 1
       || seen.has(paneIndex)
       || typeof autoScale !== 'boolean'
-      || !_finite(from)
-      || !_finite(to)
-      || from >= to
+      || (autoScale ? (!rangeMissing && !rangeValid) : !rangeValid)
     ) {
       throw new ClassifiedError(
         CATEGORIES.INVALID_ARGUMENT,
@@ -55,7 +55,12 @@ function _normalizeScaleSnapshot(value) {
       );
     }
     seen.add(paneIndex);
-    return { pane_index: paneIndex, auto_scale: autoScale, from, to };
+    return {
+      pane_index: paneIndex,
+      auto_scale: autoScale,
+      from: rangeMissing ? null : from,
+      to: rangeMissing ? null : to,
+    };
   });
 }
 
@@ -141,12 +146,21 @@ async function _readSecondaryPriceScales(evaluate) {
           };
         }
         if (!range) {
+          if (autoScale) {
+            scales.push({
+              pane_index: i,
+              auto_scale: true,
+              from: null,
+              to: null,
+            });
+            continue;
+          }
           return {
             success: false,
             error: 'secondary_price_scale_state_invalid',
             pane_index: i,
             state_failure: 'visible_range_missing',
-            auto_scale: autoScale,
+            auto_scale: false,
           };
         }
         if (typeof range.from !== 'number') {
@@ -258,11 +272,12 @@ async function _applySecondaryPriceScales(evaluate, { autoScale, restoreScales }
           }
           var restoreScale = restorePane.getMainSourcePriceScale();
           // A pane that had a real scale at capture time must still expose that
-          // scale for exact restoration. If it disappears, fail closed.
+          // scale for restoration. Auto-scale restoration only needs setAutoScale;
+          // exact numeric range restoration is required only for manual panes.
           if (
             !restoreScale
             || typeof restoreScale.setAutoScale !== 'function'
-            || typeof restoreScale.setVisiblePriceRange !== 'function'
+            || (!wanted.auto_scale && typeof restoreScale.setVisiblePriceRange !== 'function')
           ) {
             return { success: false, error: 'secondary_price_scale_restore_unavailable', pane_index: wanted.pane_index };
           }

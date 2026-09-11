@@ -50,12 +50,22 @@ function depsFor(panes) {
 
 const CASES = [
   {
-    name: 'missing visible range',
+    name: 'missing visible range while manual scale',
     scale: {
       isAutoScale: () => false,
       getVisiblePriceRange: () => null,
     },
     expected: 'visible_range_missing',
+    expectedAutoScale: false,
+  },
+  {
+    name: 'missing visible range while auto scale',
+    scale: {
+      isAutoScale: () => true,
+      getVisiblePriceRange: () => null,
+    },
+    expected: 'visible_range_missing',
+    expectedAutoScale: true,
   },
   {
     name: 'non-boolean auto-scale state',
@@ -64,6 +74,7 @@ const CASES = [
       getVisiblePriceRange: () => ({ from: -1, to: 1 }),
     },
     expected: 'auto_scale_not_boolean',
+    expectedAutoScale: null,
   },
   {
     name: 'non-finite lower range',
@@ -72,6 +83,7 @@ const CASES = [
       getVisiblePriceRange: () => ({ from: Number.NaN, to: 1 }),
     },
     expected: 'visible_range_from_not_finite',
+    expectedAutoScale: null,
   },
   {
     name: 'reversed range',
@@ -80,6 +92,7 @@ const CASES = [
       getVisiblePriceRange: () => ({ from: 2, to: 1 }),
     },
     expected: 'visible_range_order_invalid',
+    expectedAutoScale: null,
   },
 ];
 
@@ -97,14 +110,20 @@ test('secondary scale state failures expose only bounded pane/predicate diagnost
           include_secondary_price_scales: true,
           _deps: depsFor(panes),
         }),
-        (error) => (
-          error.category === 'api_unexpected'
-          && error.message.includes('secondary_price_scale_state_invalid')
-          && error.message.includes('pane_index=2')
-          && error.message.includes(`state_failure=${diagnosticCase.expected}`)
-          && !error.message.includes('NaN')
-          && !error.message.includes('[object Object]')
-        ),
+        (error) => {
+          const baseMatch = (
+            error.category === 'api_unexpected'
+            && error.message.includes('secondary_price_scale_state_invalid')
+            && error.message.includes('pane_index=2')
+            && error.message.includes(`state_failure=${diagnosticCase.expected}`)
+            && !error.message.includes('NaN')
+            && !error.message.includes('[object Object]')
+          );
+          const autoScaleMatch = diagnosticCase.expectedAutoScale === null
+            ? !error.message.includes('auto_scale=')
+            : error.message.includes(`auto_scale=${diagnosticCase.expectedAutoScale}`);
+          return baseMatch && autoScaleMatch;
+        },
       );
     });
   }
@@ -129,6 +148,7 @@ test('secondary scale getter exceptions remain fail-closed with bounded diagnost
       && error.message.includes('secondary_price_scale_state_invalid')
       && error.message.includes('pane_index=1')
       && error.message.includes('state_failure=visible_range_read_threw')
+      && !error.message.includes('auto_scale=')
       && !error.message.includes('raw-sensitive-detail')
     ),
   );

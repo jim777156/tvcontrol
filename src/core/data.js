@@ -18,6 +18,7 @@ const MAX_TRADES = 20;
 // (Patch 9A). An ungoverned/unrecognized resolution fails closed rather than
 // guessing a bar duration.
 const RESOLUTION_SECONDS = Object.freeze({
+  '1': 60,
   '5': 300,
   '15': 900,
   '60': 3600,

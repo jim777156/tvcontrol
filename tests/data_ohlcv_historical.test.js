@@ -34,7 +34,23 @@ function bar(time, open, high, low, close, volume = 10) {
   return { time, open, high, low, close, volume };
 }
 
+const RES1 = 60;
 const RES15 = 900;
+
+// Mirrors the deployed 1m research baseline so the following 3m patch can be
+// reviewed/cherry-picked independently from this baseline-reconstruction commit.
+test('16. 1m historical resolution uses a 60-second containing-bar window', async () => {
+  const eventBarTime = 1000;
+  const probe = { eventIdx: 2, firstIdx: 0, lastIdx: 4, firstTime: eventBarTime - 2 * RES1, more: true };
+  const window = [];
+  for (let i = -1; i <= 1; i++) window.push(bar(eventBarTime + i * RES1, 1, 1.1, 0.9, 1.05));
+  const { evaluate } = makeEvaluate({ resolution: '1', probeStates: [probe], extractedBars: window });
+  const result = await getOhlcv({ event_timestamp: eventBarTime + 45, bars_before: 1, bars_after: 1, _deps: { evaluate } });
+  assert.equal(result.success, true);
+  assert.equal(result.resolution, '1');
+  assert.equal(result.bar_seconds, RES1);
+  assert.equal(result.event_bar_time, eventBarTime);
+});
 
 test('1. legacy count/summary path is unchanged by the historical branch', async () => {
   const evaluate = async (expression) => {

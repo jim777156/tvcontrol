@@ -35,6 +35,7 @@ function bar(time, open, high, low, close, volume = 10) {
 }
 
 const RES1 = 60;
+const RES3 = 180;
 const RES15 = 900;
 
 // Mirrors the deployed 1m research baseline so the following 3m patch can be
@@ -49,6 +50,19 @@ test('16. 1m historical resolution uses a 60-second containing-bar window', asyn
   assert.equal(result.success, true);
   assert.equal(result.resolution, '1');
   assert.equal(result.bar_seconds, RES1);
+  assert.equal(result.event_bar_time, eventBarTime);
+});
+
+test('17. 3m historical resolution uses a 180-second containing-bar window', async () => {
+  const eventBarTime = 2000;
+  const probe = { eventIdx: 2, firstIdx: 0, lastIdx: 4, firstTime: eventBarTime - 2 * RES3, more: true };
+  const window = [];
+  for (let i = -1; i <= 1; i++) window.push(bar(eventBarTime + i * RES3, 1, 1.1, 0.9, 1.05));
+  const { evaluate } = makeEvaluate({ resolution: '3', probeStates: [probe], extractedBars: window });
+  const result = await getOhlcv({ event_timestamp: eventBarTime + 119, bars_before: 1, bars_after: 1, _deps: { evaluate } });
+  assert.equal(result.success, true);
+  assert.equal(result.resolution, '3');
+  assert.equal(result.bar_seconds, RES3);
   assert.equal(result.event_bar_time, eventBarTime);
 });
 

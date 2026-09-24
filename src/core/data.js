@@ -19,6 +19,7 @@ const MAX_TRADES = 20;
 // guessing a bar duration.
 const RESOLUTION_SECONDS = Object.freeze({
   '1': 60,
+  '3': 180,
   '5': 300,
   '15': 900,
   '60': 3600,
